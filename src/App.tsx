@@ -1,49 +1,58 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import type { FormEvent, ReactNode } from 'react';
+import { useMemo, useState } from 'react';
+import type { FormEvent } from 'react';
 import {
-  Activity,
-  ArrowRight,
-  BatteryCharging,
-  BatteryMedium,
-  Bot,
-  Check,
-  CheckCircle2,
-  ChevronDown,
-  ChevronRight,
-  CircleStop,
-  Clock3,
-  Copy,
-  Ellipsis,
-  Eye,
-  EyeOff,
-  FileJson,
-  Headphones,
-  Info,
-  ListTree,
-  LoaderCircle,
-  MapPin,
-  MessageSquareText,
-  Mic,
-  Navigation,
-  Pause,
-  Play,
-  Power,
-  RefreshCw,
-  Send,
-  Server,
-  Settings2,
-  ShieldAlert,
-  SkipForward,
-  Square,
-  Terminal,
-  Trash2,
-  Unplug,
-  Wifi,
-  WifiOff,
-  X,
-  Zap,
-} from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
+  Alert,
+  App as AntApp,
+  Button,
+  Card,
+  Col,
+  Divider,
+  Empty,
+  Form,
+  Input,
+  Layout,
+  List,
+  Modal,
+  Popconfirm,
+  Row,
+  Segmented,
+  Space,
+  Statistic,
+  Tag,
+  Tooltip,
+  Typography,
+  message,
+} from 'antd';
+import {
+  ApiOutlined,
+  AudioOutlined,
+  ThunderboltOutlined as BatteryChargingIcon,
+  CheckOutlined,
+  CloseCircleOutlined,
+  CloseOutlined,
+  CodeOutlined,
+  CopyOutlined,
+  DisconnectOutlined,
+  EnvironmentOutlined,
+  EyeInvisibleOutlined,
+  EyeOutlined,
+  FastForwardOutlined,
+  LinkOutlined,
+  LoadingOutlined,
+  MessageOutlined,
+  NodeIndexOutlined,
+  PauseCircleOutlined,
+  PlayCircleOutlined,
+  PoweroffOutlined,
+  ReloadOutlined,
+  RobotOutlined,
+  SendOutlined,
+  StopOutlined,
+  ThunderboltOutlined,
+  WarningOutlined,
+} from '@ant-design/icons';
+import type { ActionName, ButtonKey, RoutePoint } from './protocol';
+import type { ActionParams, ConnectionConfig } from './protocol';
 import {
   buildRoutePoints,
   buildWebSocketUrl,
@@ -52,62 +61,65 @@ import {
   taskDisplayName,
   taskTypeLabel,
 } from './protocol';
-import type { ActionName, ActionParams, ButtonKey, ConnectionConfig, RoutePoint } from './protocol';
 import { useController } from './useController';
 import type { LogDirection } from './useController';
 
-interface ConfirmState {
-  title: string;
-  description: string;
-  confirmLabel: string;
-  tone?: 'danger' | 'primary';
-  action: ActionName;
-  params?: ActionParams;
-}
+const { Header, Sider, Content } = Layout;
+const { Text, Paragraph, Title } = Typography;
 
-type ModalState = { kind: 'confirm'; data: ConfirmState } | { kind: 'points' } | null;
-
-const CONTROL_GROUPS: {
-  title: string;
-  description: string;
-  actions: { key: ButtonKey; label: string; icon: LucideIcon; tone?: 'danger' | 'warning' }[];
-}[] = [
-  {
-    title: '任务流程',
-    description: '控制当前讲解与任务节奏',
-    actions: [
-      { key: 'pauseTask', label: '暂停任务', icon: Pause },
-      { key: 'resumeTask', label: '继续任务', icon: Play },
-      { key: 'skipCurrentTask', label: '跳过当前', icon: SkipForward },
-      { key: 'endTask', label: '结束流程', icon: Square, tone: 'warning' },
-    ],
-  },
-  {
-    title: '对话与语音',
-    description: '管理对话、播报和录音',
-    actions: [
-      { key: 'startDialogue', label: '开始对话', icon: MessageSquareText },
-      { key: 'interruptDialogue', label: '打断对话', icon: Zap },
-      { key: 'endDialogue', label: '结束对话', icon: CircleStop },
-      { key: 'endRecording', label: '结束录音', icon: Mic },
-    ],
-  },
-  {
-    title: '机器人',
-    description: '导航与整机操作',
-    actions: [
-      { key: 'stopNavigation', label: '停止导航', icon: Navigation, tone: 'warning' },
-      { key: 'shutdownRobot', label: '机器人关机', icon: Power, tone: 'danger' },
-    ],
-  },
-];
-
-const CONNECTION_LABELS = {
+const CONNECTION_LABELS: Record<string, string> = {
   disconnected: '未连接',
   connecting: '正在连接',
   reconnecting: '等待重连',
   connected: '服务已连接',
 };
+
+const CONNECTION_COLORS: Record<string, string> = {
+  disconnected: 'default',
+  connecting: 'processing',
+  reconnecting: 'processing',
+  connected: 'success',
+};
+
+interface ControlItem {
+  key: ButtonKey;
+  label: string;
+  icon: React.ReactNode;
+  danger?: boolean;
+  confirmTitle?: string;
+  confirmContent?: string;
+}
+
+const CONTROL_GROUPS: { title: string; description: string; items: ControlItem[] }[] = [
+  {
+    title: '任务流程',
+    description: '控制当前讲解与任务节奏',
+    items: [
+      { key: 'pauseTask', label: '暂停任务', icon: <PauseCircleOutlined /> },
+      { key: 'resumeTask', label: '继续任务', icon: <PlayCircleOutlined /> },
+      { key: 'skipCurrentTask', label: '跳过当前', icon: <FastForwardOutlined /> },
+      { key: 'endTask', label: '结束流程', icon: <StopOutlined />, danger: true, confirmTitle: '结束当前任务流程？', confirmContent: '当前任务及其后续执行将被结束，设备会以新的状态快照确认结果。' },
+    ],
+  },
+  {
+    title: '对话与语音',
+    description: '管理对话、播报和录音',
+    items: [
+      { key: 'startDialogue', label: '开始对话', icon: <MessageOutlined /> },
+      { key: 'interruptDialogue', label: '打断对话', icon: <ThunderboltOutlined /> },
+      { key: 'endDialogue', label: '结束对话', icon: <CloseCircleOutlined /> },
+      { key: 'endRecording', label: '结束录音', icon: <AudioOutlined /> },
+    ],
+  },
+  {
+    title: '机器人',
+    description: '导航与整机操作',
+    items: [
+      { key: 'stopNavigation', label: '停止导航', icon: <EnvironmentOutlined />, danger: true, confirmTitle: '停止当前导航？', confirmContent: '导航将停止并清理相关任务，请确认机器人当前可以安全停下。' },
+      { key: 'shutdownRobot', label: '机器人关机', icon: <PoweroffOutlined />, danger: true, confirmTitle: '确认将机器人关机？', confirmContent: '整机关机后需要现场重新启动。请确保机器人处于安全环境，且没有正在进行的必要任务。' },
+    ],
+  },
+];
 
 function formatTime(iso: string | null): string {
   if (!iso) return '—';
@@ -127,95 +139,44 @@ function prettyRaw(raw: string): string {
   }
 }
 
-function Modal({
-  title,
-  eyebrow,
-  onClose,
-  children,
-  wide = false,
-}: {
-  title: string;
-  eyebrow?: string;
-  onClose: () => void;
-  children: ReactNode;
-  wide?: boolean;
-}) {
-  const panelRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const previousFocus = document.activeElement as HTMLElement | null;
-    const panel = panelRef.current;
-    const focusable = () =>
-      Array.from(
-        panel?.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), [tabindex="0"]',
-        ) ?? [],
-      );
-    focusable()[0]?.focus();
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-      if (event.key !== 'Tab') return;
-      const elements = focusable();
-      if (!elements.length) return;
-      const first = elements[0];
-      const last = elements[elements.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('keydown', onKeyDown);
-      previousFocus?.focus();
-    };
-  }, [onClose]);
-
-  return (
-    <div className="modal-backdrop" onMouseDown={onClose}>
-      <div
-        className={`modal-panel ${wide ? 'modal-panel--wide' : ''}`}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="modal-title"
-        ref={panelRef}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="modal-heading">
-          <div>
-            {eyebrow && <span className="eyebrow">{eyebrow}</span>}
-            <h2 id="modal-title">{title}</h2>
-          </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="关闭对话框">
-            <X size={19} />
-          </button>
-        </div>
-        {children}
-      </div>
-    </div>
-  );
+function statusTagColor(status: string): string {
+  const map: Record<string, string> = {
+    idle: 'default',
+    not_started: 'default',
+    preparing: 'processing',
+    in_progress: 'processing',
+    paused: 'warning',
+    task_completed: 'cyan',
+    waiting: 'processing',
+    completed: 'success',
+    skipped: 'default',
+  };
+  return map[status.toLowerCase()] ?? 'default';
 }
 
-function EmptyState({
-  icon: Icon,
-  title,
-  description,
-}: {
-  icon: LucideIcon;
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className="empty-state">
-      <span className="empty-state__icon"><Icon size={24} strokeWidth={1.6} /></span>
-      <strong>{title}</strong>
-      <p>{description}</p>
-    </div>
-  );
+function routeProgressColor(progress: string): string {
+  if (progress === 'completed') return '#52c41a';
+  if (progress === 'active') return '#1677ff';
+  return '#d9d9d9';
 }
+
+function routeProgressText(progress: string): string {
+  if (progress === 'completed') return '前序位置';
+  if (progress === 'active') return '当前位置';
+  return '待执行';
+}
+
+const LOG_DIR_LABELS: Record<LogDirection, string> = {
+  incoming: '接收',
+  outgoing: '发送',
+  system: '系统',
+};
+
+const LOG_DIR_COLORS: Record<LogDirection, string> = {
+  incoming: 'green',
+  outgoing: 'blue',
+  system: 'default',
+};
 
 function App() {
   const controller = useController();
@@ -233,14 +194,15 @@ function App() {
     isQuerying,
     lastReceivedAt,
   } = controller;
+
   const [question, setQuestion] = useState('');
   const [point, setPoint] = useState('');
   const [pointName, setPointName] = useState('');
   const [showDeviceCode, setShowDeviceCode] = useState(false);
-  const [modal, setModal] = useState<ModalState>(null);
-  const [toast, setToast] = useState<{ message: string; tone: 'success' | 'error' } | null>(null);
+  const [pointsModalOpen, setPointsModalOpen] = useState(false);
   const [logFilter, setLogFilter] = useState<'all' | LogDirection>('all');
   const [expandedLog, setExpandedLog] = useState<string | null>(null);
+  const [messageApi, contextHolder] = message.useMessage();
 
   const routePoints = useMemo(() => buildRoutePoints(snapshot, canControl), [snapshot, canControl]);
   const { task, innerTask } = getCurrentTasks(snapshot);
@@ -254,14 +216,8 @@ function App() {
   const filteredLogs = logs.filter((entry) => logFilter === 'all' || entry.direction === logFilter);
   const isActive = status !== 'disconnected';
 
-  useEffect(() => {
-    if (!toast) return;
-    const timer = setTimeout(() => setToast(null), 3200);
-    return () => clearTimeout(timer);
-  }, [toast]);
-
-  const notify = (message: string, tone: 'success' | 'error' = 'success') => {
-    setToast({ message, tone });
+  const notify = (msg: string, type: 'success' | 'error' = 'success') => {
+    messageApi[type](msg);
   };
 
   const updateConfig = (key: keyof ConnectionConfig, value: string) => {
@@ -271,7 +227,6 @@ function App() {
   const execute = (action: ActionName, params: ActionParams = {}) => {
     try {
       controller.sendAction(action, params);
-      setModal(null);
       if (action === 'textQuestion') setQuestion('');
       notify('指令已发送，等待设备状态更新');
       return true;
@@ -281,67 +236,47 @@ function App() {
     }
   };
 
-  const requestAction = (key: ButtonKey) => {
-    const confirmations: Partial<Record<ButtonKey, ConfirmState>> = {
-      endTask: {
-        title: '结束当前任务流程？',
-        description: '当前任务及其后续执行将被结束，设备会以新的状态快照确认结果。',
-        confirmLabel: '结束流程',
-        action: 'endTask',
-        tone: 'danger',
-      },
-      stopNavigation: {
-        title: '停止当前导航？',
-        description: '导航将停止并清理相关任务，请确认机器人当前可以安全停下。',
-        confirmLabel: '停止导航',
-        action: 'stopNavigation',
-        tone: 'danger',
-      },
-      shutdownRobot: {
-        title: '确认将机器人关机？',
-        description: '整机关机后需要现场重新启动。请确保机器人处于安全环境，且没有正在进行的必要任务。',
-        confirmLabel: '确认关机',
-        action: 'shutdownRobot',
-        tone: 'danger',
-      },
-    };
-    const confirmation = confirmations[key];
-    if (confirmation) setModal({ kind: 'confirm', data: confirmation });
-    else execute(key);
+  const handleControlClick = (item: ControlItem) => {
+    if (item.confirmTitle) {
+      Modal.confirm({
+        title: item.confirmTitle,
+        content: item.confirmContent,
+        okText: item.label,
+        okType: 'danger',
+        cancelText: '取消',
+        onOk: () => execute(item.key),
+      });
+    } else {
+      execute(item.key);
+    }
   };
 
   const requestJump = (routePoint: RoutePoint) => {
     if (!routePoint.canNavigate) return;
-    setModal({
-      kind: 'confirm',
-      data: {
-        title: `跳转到“${routePoint.name}”？`,
-        description: `将结束当前执行，从主任务 ${routePoint.rootIndex + 1}（步骤 ${routePoint.stepId}）重新派发后续任务。`,
-        confirmLabel: '确认跳转',
-        action: 'jumpToNavigationStep',
-        params: { stepId: routePoint.stepId },
-      },
+    Modal.confirm({
+      title: `跳转到"${routePoint.name}"？`,
+      content: `将结束当前执行，从主任务 ${routePoint.rootIndex + 1}（步骤 ${routePoint.stepId}）重新派发后续任务。`,
+      okText: '确认跳转',
+      cancelText: '取消',
+      onOk: () => execute('jumpToNavigationStep', { stepId: routePoint.stepId }),
     });
   };
 
-  const submitQuestion = (event: FormEvent) => {
-    event.preventDefault();
+  const submitQuestion = (e: FormEvent) => {
+    e.preventDefault();
     if (!question.trim()) return;
     execute('textQuestion', { text: question });
   };
 
-  const submitDirectNavigation = (event: FormEvent) => {
-    event.preventDefault();
+  const submitDirectNavigation = (e: FormEvent) => {
+    e.preventDefault();
     if (!point.trim() || !pointName.trim() || !canControl) return;
-    setModal({
-      kind: 'confirm',
-      data: {
-        title: `导航到“${pointName.trim()}”？`,
-        description: `将使用点位值 ${point.trim()} 发起独立导航，不改变当前任务树中的步骤索引。`,
-        confirmLabel: '开始导航',
-        action: 'navigateToPoint',
-        params: { point, pointName },
-      },
+    Modal.confirm({
+      title: `导航到"${pointName.trim()}"？`,
+      content: `将使用点位值 ${point.trim()} 发起独立导航，不改变当前任务树中的步骤索引。`,
+      okText: '开始导航',
+      cancelText: '取消',
+      onOk: () => execute('navigateToPoint', { point, pointName }),
     });
   };
 
@@ -354,535 +289,712 @@ function App() {
     }
   };
 
-  const routeWindow = useMemo(() => {
-    const capacity = 6;
-    if (routePoints.length <= capacity) return routePoints;
-    const activeIndex = routePoints.findIndex((item) => item.progress === 'active');
-    const pendingIndex = routePoints.findIndex((item) => item.progress === 'pending');
-    const focus = activeIndex >= 0 ? activeIndex : pendingIndex >= 0 ? pendingIndex : routePoints.length - 1;
-    const start = Math.max(0, Math.min(focus - 2, routePoints.length - capacity));
-    return routePoints.slice(start, start + capacity);
-  }, [routePoints]);
-
   const deviceStatus = screenOnline === true ? '在线' : screenOnline === false ? '离线' : '未知';
   const flowName = snapshot ? (snapshot.command?.name ?? '无任务流程') : '等待设备状态';
+  const battery = snapshot?.deviceInfo.robotBatteryPercent;
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true"><span /><span /><span /></span>
-          <div>
-            <strong>数字人控制台</strong>
-            <span>DIGITAL HUMAN / OPS</span>
-          </div>
-        </div>
-
-        <div className="sidebar-section connection-section">
-          <div className="sidebar-heading">
-            <span><Settings2 size={16} />连接配置</span>
-            <span className={`connection-dot connection-dot--${status}`} title={CONNECTION_LABELS[status]} />
-          </div>
-
-          <label className="field-label" htmlFor="server">服务器地址</label>
-          <div className="dark-input-wrap">
-            <Server size={16} />
-            <input
-              id="server"
-              value={config.server}
-              onChange={(event) => updateConfig('server', event.target.value)}
-              placeholder="http://192.168.3.248"
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </div>
-
-          <label className="field-label" htmlFor="port">端口</label>
-          <div className="dark-input-wrap">
-            <Unplug size={16} />
-            <input
-              id="port"
-              value={config.port}
-              onChange={(event) => updateConfig('port', event.target.value)}
-              inputMode="numeric"
-              placeholder="8880"
-              autoComplete="off"
-            />
-          </div>
-
-          <label className="field-label" htmlFor="deviceCode">设备号</label>
-          <div className="dark-input-wrap dark-input-wrap--code">
-            <Bot size={16} />
-            <input
-              id="deviceCode"
-              type={showDeviceCode ? 'text' : 'password'}
-              value={config.deviceCode}
-              onChange={(event) => updateConfig('deviceCode', event.target.value)}
-              autoComplete="off"
-              spellCheck={false}
-            />
-            <button
-              type="button"
-              onClick={() => setShowDeviceCode((visible) => !visible)}
-              aria-label={showDeviceCode ? '隐藏设备号' : '显示设备号'}
-            >
-              {showDeviceCode ? <EyeOff size={15} /> : <Eye size={15} />}
-            </button>
-            <button type="button" onClick={copyDeviceCode} aria-label="复制设备号"><Copy size={15} /></button>
-          </div>
-
-          <div className="socket-preview">
-            <span>WebSocket 端点</span>
-            <code title={socketPreview}>{socketPreview}</code>
-          </div>
-
-          {configDirty && isActive && (
-            <p className="config-notice"><Info size={14} />配置已修改，重连后生效。</p>
-          )}
-
-          <div className="connection-actions">
-            {(!isActive || configDirty) && (
-              <button
-                className="button button--accent button--full"
-                type="button"
-                onClick={() => controller.connect()}
-              >
-                <Wifi size={16} />{configDirty && isActive ? '保存并重连' : '连接设备'}
-              </button>
-            )}
-            {isActive && (
-              <button className="button button--dark button--full" type="button" onClick={controller.disconnect}>
-                <Unplug size={16} />{status === 'connected' && !configDirty ? '断开连接' : '取消连接'}
-              </button>
-            )}
-          </div>
-        </div>
-
-        <div className="sidebar-status">
-          <div className="sidebar-status__row">
-            <span>服务通道</span>
-            <strong className={`text-status text-status--${status}`}>{CONNECTION_LABELS[status]}</strong>
-          </div>
-          <div className="sidebar-status__row">
-            <span>设备状态</span>
-            <strong>{deviceStatus}</strong>
-          </div>
-          <div className="sidebar-status__row">
-            <span>最近快照</span>
-            <strong>{formatTime(lastReceivedAt)}</strong>
-          </div>
-        </div>
-
-        <div className="sidebar-footnote">
-          <ShieldAlert size={15} />
-          <p>控制动作不做本地成功预判，以设备最新完整快照为准。</p>
-        </div>
-      </aside>
-
-      <div className="workspace">
-        <header className="topbar">
-          <div>
-            <span className="topbar-kicker">OPERATIONS CONSOLE</span>
-            <h1>任务与设备控制</h1>
-          </div>
-          <div className="topbar-actions">
-            <span className="protocol-badge"><FileJson size={14} />协议 v1.23</span>
-            <span className={`service-badge service-badge--${status}`}>
-              {status === 'connecting' || status === 'reconnecting' ? (
-                <LoaderCircle size={14} className="spin" />
-              ) : status === 'connected' ? <Wifi size={14} /> : <WifiOff size={14} />}
-              {CONNECTION_LABELS[status]}
-            </span>
-            <button
-              className="button button--light button--compact"
-              type="button"
-              onClick={controller.requestState}
-              disabled={status !== 'connected' || isQuerying}
-              title={status === 'connected' ? '获取最新完整状态' : '连接后可刷新状态'}
-            >
-              <RefreshCw size={15} className={isQuerying ? 'spin' : ''} />
-              {isQuerying ? '获取中' : '刷新状态'}
-            </button>
-          </div>
-        </header>
-
-        <main className="main-content">
-          {error && (
-            <div className="error-banner" role="alert">
-              <Info size={18} />
-              <span>{error}</span>
-              <button type="button" onClick={controller.clearError} aria-label="关闭错误提示"><X size={17} /></button>
-            </div>
-          )}
-
-          <section className="device-banner" aria-labelledby="device-name">
-            <div className="device-identity">
-              <div className="device-avatar"><Bot size={30} strokeWidth={1.5} /></div>
+    <AntApp>
+      {contextHolder}
+      <Layout style={{ minHeight: '100vh' }}>
+        {/* 左侧连接配置面板 */}
+        <Sider
+          width={320}
+          theme="light"
+          style={{
+            overflow: 'auto',
+            height: '100vh',
+            position: 'sticky',
+            top: 0,
+            borderRight: '1px solid #f0f0f0',
+          }}
+        >
+          <div style={{ padding: '24px 20px' }}>
+            <Space direction="vertical" size="large" style={{ width: '100%' }}>
+              {/* 品牌区域 */}
               <div>
-                <div className="device-eyebrow">
-                  <span className={`live-dot ${screenOnline === true ? 'live-dot--online' : ''}`} />
-                  设备 {deviceStatus}
-                </div>
-                <h2 id="device-name">{snapshot?.deviceInfo.deviceName || '尚未获取设备信息'}</h2>
-                <p>{snapshot ? '设备完整状态已同步' : '连接服务器后，将在此展示数字人与机器人状态'}</p>
-              </div>
-            </div>
-            <div className="device-metrics">
-              <div className="device-metric">
-                <span><Activity size={15} />机器人</span>
-                <strong>{snapshot ? (snapshot.deviceInfo.robotConnected ? '已连接' : '未连接') : '—'}</strong>
-                <small className={snapshot && !snapshot.deviceInfo.robotNormal ? 'metric-warning' : ''}>
-                  {snapshot ? (snapshot.deviceInfo.robotNormal ? '运行正常' : snapshot.deviceInfo.robotErrorMessage || '状态异常') : '等待状态'}
-                </small>
-              </div>
-              <div className="device-metric">
-                <span><BatteryMedium size={15} />电池电量</span>
-                <strong>{snapshot?.deviceInfo.robotBatteryPercent ?? '—'}{snapshot?.deviceInfo.robotBatteryPercent != null && '%'}</strong>
-                <small>{snapshot?.deviceInfo.robotCharging ? <><BatteryCharging size={12} />正在充电</> : snapshot ? '未在充电' : '等待状态'}</small>
-              </div>
-              <div className="device-metric">
-                <span><Navigation size={15} />机器人 IP</span>
-                <strong className="metric-code">{snapshot?.deviceInfo.robotIp || '—'}</strong>
-                <small>{snapshot?.deviceInfo.robotConnected ? '网络已关联' : '等待连接'}</small>
-              </div>
-            </div>
-          </section>
-
-          <div className="dashboard-grid">
-            <div className="primary-column">
-              <section className="panel current-task-panel" aria-labelledby="current-task-title">
-                <div className="panel-heading">
-                  <div>
-                    <span className="eyebrow">CURRENT TASK</span>
-                    <h2 id="current-task-title">当前任务</h2>
+                <Space align="center" size={12}>
+                  <div style={{
+                    width: 40, height: 40, borderRadius: 10,
+                    background: 'linear-gradient(135deg, #1677ff, #0958d9)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    <RobotOutlined style={{ color: '#fff', fontSize: 20 }} />
                   </div>
-                  {snapshot && (
-                    <span className={`status-chip status-chip--${snapshot.taskState.status.toLowerCase()}`}>
-                      {statusLabel(snapshot.taskState.status)}
-                    </span>
+                  <div>
+                    <Title level={5} style={{ margin: 0 }}>数字人控制台</Title>
+                    <Text type="secondary" style={{ fontSize: 11 }}>DIGITAL HUMAN / OPS</Text>
+                  </div>
+                </Space>
+              </div>
+
+              {/* 连接配置 */}
+              <div>
+                <div style={{ marginBottom: 16 }}>
+                  <Space align="center" style={{ width: '100%', justifyContent: 'space-between' }}>
+                    <Space>
+                      <ApiOutlined />
+                      <Text strong>连接配置</Text>
+                    </Space>
+                    <Tag color={CONNECTION_COLORS[status]} style={{ margin: 0 }}>
+                      {CONNECTION_LABELS[status]}
+                    </Tag>
+                  </Space>
+                </div>
+
+                <Form layout="vertical" size="small">
+                  <Form.Item label="服务器地址">
+                    <Input
+                      prefix={<LinkOutlined />}
+                      value={config.server}
+                      onChange={(e) => updateConfig('server', e.target.value)}
+                      placeholder="http://192.168.3.248"
+                      autoComplete="off"
+                    />
+                  </Form.Item>
+
+                  <Form.Item label="端口">
+                    <Input
+                      prefix={<ApiOutlined />}
+                      value={config.port}
+                      onChange={(e) => updateConfig('port', e.target.value)}
+                      placeholder="8880"
+                      inputMode="numeric"
+                      autoComplete="off"
+                    />
+                  </Form.Item>
+
+                  <Form.Item label="设备号">
+                    <Input.Search
+                      prefix={<RobotOutlined />}
+                      type={showDeviceCode ? 'text' : 'password'}
+                      value={config.deviceCode}
+                      onChange={(e) => updateConfig('deviceCode', e.target.value)}
+                      placeholder="输入设备码"
+                      autoComplete="off"
+                      enterButton={false}
+                      suffix={
+                        <Space size={2}>
+                          <Button
+                            type="text"
+                            size="small"
+                            icon={showDeviceCode ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+                            onClick={() => setShowDeviceCode((v) => !v)}
+                          />
+                          <Button
+                            type="text"
+                            size="small"
+                            icon={<CopyOutlined />}
+                            onClick={copyDeviceCode}
+                          />
+                        </Space>
+                      }
+                    />
+                  </Form.Item>
+                </Form>
+
+                {/* WebSocket 端点预览 */}
+                <Card size="small" style={{ marginBottom: 12, background: '#fafafa' }}>
+                  <Text type="secondary" style={{ fontSize: 11 }}>WebSocket 端点</Text>
+                  <Paragraph style={{ margin: '4px 0 0' }} ellipsis={{ tooltip: socketPreview }}>
+                    <Text code style={{ fontSize: 11 }}>{socketPreview}</Text>
+                  </Paragraph>
+                </Card>
+
+                {configDirty && isActive && (
+                  <div style={{ marginBottom: 12 }}>
+                    <Text type="warning" style={{ fontSize: 12 }}>
+                      <WarningOutlined /> 配置已修改，重连后生效。
+                    </Text>
+                  </div>
+                )}
+
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  {(!isActive || configDirty) && (
+                    <Button
+                      type="primary"
+                      block
+                      icon={<LinkOutlined />}
+                      loading={status === 'connecting'}
+                      onClick={() => controller.connect()}
+                    >
+                      {configDirty && isActive ? '保存并重连' : '连接设备'}
+                    </Button>
                   )}
-                </div>
+                  {isActive && (
+                    <Button
+                      block
+                      icon={<DisconnectOutlined />}
+                      onClick={controller.disconnect}
+                    >
+                      {status === 'connected' && !configDirty ? '断开连接' : '取消连接'}
+                    </Button>
+                  )}
+                </Space>
+              </div>
 
-                {snapshot && task ? (
-                  <div className="task-detail">
-                    <div className="task-sequence">
-                      <span>主任务</span>
-                      <strong>{String(snapshot.taskState.taskIndex + 1).padStart(2, '0')}</strong>
-                      <small>/ {String(snapshot.command?.tasks.length ?? 0).padStart(2, '0')}</small>
-                    </div>
-                    <div className="task-copy">
-                      <span className="task-kind">{taskTypeLabel(task)}</span>
-                      <h3 title={taskDisplayName(task)}>{taskDisplayName(task)}</h3>
-                      <p>{statusLabel(snapshot.taskState.status)}</p>
-                    </div>
-                    {innerTask && (
-                      <div className="inner-task">
-                        <span className="inner-task__icon"><Headphones size={18} /></span>
-                        <div>
-                          <span>子任务 {snapshot.taskState.innerTaskIndex + 1} · {taskTypeLabel(innerTask)}</span>
-                          <strong title={taskDisplayName(innerTask)}>{taskDisplayName(innerTask)}</strong>
-                        </div>
-                        <small>{statusLabel(snapshot.taskState.innerTaskStatus)}</small>
-                      </div>
-                    )}
+              {/* 状态摘要 */}
+              <Card size="small">
+                <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <Text type="secondary">服务通道</Text>
+                    <Tag color={CONNECTION_COLORS[status]}>{CONNECTION_LABELS[status]}</Tag>
                   </div>
-                ) : (
-                  <EmptyState
-                    icon={ListTree}
-                    title={snapshot ? '当前任务：无' : '正在等待任务状态'}
-                    description={snapshot ? '设备当前处于空闲状态，可以发起对话或独立导航。' : '连接成功后会自动发送 getState，获取当前主任务和子任务。'}
-                  />
-                )}
-              </section>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <Text type="secondary">设备状态</Text>
+                    <Text strong>{deviceStatus}</Text>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <Text type="secondary">最近快照</Text>
+                    <Text strong>{formatTime(lastReceivedAt)}</Text>
+                  </div>
+                </Space>
+              </Card>
 
-              <section className="panel route-panel" aria-labelledby="route-title">
-                <div className="panel-heading route-heading">
-                  <div>
-                    <span className="eyebrow">ROUTE PREVIEW</span>
-                    <h2 id="route-title">{flowName}</h2>
-                  </div>
-                  <div className="route-heading__meta">
-                    <span>{routePoints.length} 个导航点</span>
-                    {routePoints.length > 0 && (
-                      <button className="text-button" type="button" onClick={() => setModal({ kind: 'points' })}>
-                        全部点位 <ChevronRight size={15} />
-                      </button>
-                    )}
-                  </div>
-                </div>
+              <div>
+                <Space align="start" size={8}>
+                  <WarningOutlined style={{ color: '#8c8c8c', marginTop: 2 }} />
+                  <Text type="secondary" style={{ fontSize: 12, lineHeight: 1.6 }}>
+                    控制动作不做本地成功预判，以设备最新完整快照为准。
+                  </Text>
+                </Space>
+              </div>
+            </Space>
+          </div>
+        </Sider>
 
-                {routePoints.length ? (
-                  <>
-                    <ol className="route-track">
-                      {routeWindow.map((routePoint) => {
-                        const originalIndex = routePoints.findIndex((item) => item.key === routePoint.key);
-                        return (
-                          <li
-                            className={`route-stop route-stop--${routePoint.progress}`}
-                            key={routePoint.key}
-                          >
-                            <button
-                              type="button"
-                              className="route-stop__button"
-                              disabled={!routePoint.canNavigate}
-                              onClick={() => requestJump(routePoint)}
-                              aria-label={`${routePoint.name}，${routePoint.progress === 'active' ? '当前任务' : routePoint.progress === 'completed' ? '位置已完成' : '待执行'}${routePoint.canNavigate ? '，点击跳转' : ''}`}
-                              title={routePoint.canNavigate ? `跳转到 ${routePoint.name}` : routePoint.name}
-                            >
-                              <span className="route-node">
-                                {routePoint.progress === 'completed' ? <Check size={18} strokeWidth={2.5} /> : originalIndex + 1}
-                              </span>
-                              <span className="route-stop__name">{routePoint.name}</span>
-                              <span className="route-stop__status">
-                                {routePoint.progress === 'active' ? '当前位置' : routePoint.progress === 'completed' ? '前序位置' : '待执行'}
-                              </span>
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ol>
-                    <div className="route-legend">
-                      <span><i className="legend-dot legend-dot--completed" />前序</span>
-                      <span><i className="legend-dot legend-dot--active" />当前</span>
-                      <span><i className="legend-dot" />待执行</span>
-                      <small>点击可用点位可跳转 · 暂停时需先继续任务</small>
-                    </div>
-                  </>
-                ) : (
-                  <EmptyState
-                    icon={MapPin}
-                    title={snapshot ? '暂无可显示轨迹' : '轨迹等待同步'}
-                    description={snapshot?.command ? '任务树中没有满足显示条件的根导航任务。' : '轨迹仅展示流程中的可见根导航任务，不代表机器人实际运动路径。'}
-                  />
-                )}
-              </section>
+        {/* 主内容区 */}
+        <Layout>
+          <Header style={{
+            background: '#fff',
+            borderBottom: '1px solid #f0f0f0',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '0 32px',
+            height: 72,
+          }}>
+            <div>
+              <Text type="secondary" style={{ fontSize: 11, letterSpacing: 1 }}>OPERATIONS CONSOLE</Text>
+              <Title level={4} style={{ margin: '2px 0 0' }}>任务与设备控制</Title>
             </div>
+            <Space size="middle">
+              <Tag icon={<CodeOutlined />} color="blue">协议 v1.23</Tag>
+              <Tag
+                color={CONNECTION_COLORS[status]}
+                icon={status === 'connecting' || status === 'reconnecting' ? <LoadingOutlined /> : status === 'connected' ? <LinkOutlined /> : <DisconnectOutlined />}
+              >
+                {CONNECTION_LABELS[status]}
+              </Tag>
+              <Button
+                icon={isQuerying ? <LoadingOutlined /> : <ReloadOutlined />}
+                onClick={controller.requestState}
+                disabled={status !== 'connected' || isQuerying}
+              >
+                {isQuerying ? '获取中' : '刷新状态'}
+              </Button>
+            </Space>
+          </Header>
 
-            <div className="control-column">
-              <section className="panel controls-panel" aria-labelledby="controls-title">
-                <div className="panel-heading">
-                  <div>
-                    <span className="eyebrow">DEVICE ACTIONS</span>
-                    <h2 id="controls-title">控制动作</h2>
-                  </div>
-                  <span className={`availability-dot ${canControl ? 'availability-dot--ready' : ''}`}>
-                    {canControl ? '可控制' : '已锁定'}
-                  </span>
-                </div>
+          <Content style={{ padding: '24px 32px', maxWidth: 1600, margin: '0 auto', width: '100%' }}>
+            {/* 错误提示 */}
+            {error && (
+              <Alert
+                message={error}
+                type="error"
+                showIcon
+                closable
+                onClose={controller.clearError}
+                style={{ marginBottom: 16 }}
+              />
+            )}
 
-                <div className="control-groups">
-                  {CONTROL_GROUPS.map((group) => (
-                    <div className="control-group" key={group.title}>
-                      <div className="control-group__heading">
-                        <strong>{group.title}</strong>
-                        <span>{group.description}</span>
+            {/* 设备信息横幅 */}
+            <Card style={{ marginBottom: 16, background: 'linear-gradient(135deg, #1677ff 0%, #0958d9 100%)', border: 'none' }}>
+              <Row gutter={24} align="middle">
+                <Col flex="auto">
+                  <Space size="large" align="center">
+                    <div style={{
+                      width: 56, height: 56, borderRadius: 14,
+                      background: 'rgba(255,255,255,0.15)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}>
+                      <RobotOutlined style={{ color: '#fff', fontSize: 28 }} />
+                    </div>
+                    <div>
+                      <Space size={8}>
+                        <div style={{
+                          width: 8, height: 8, borderRadius: '50%',
+                          background: screenOnline === true ? '#52c41a' : '#8c8c8c',
+                        }} />
+                        <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12 }}>设备 {deviceStatus}</Text>
+                      </Space>
+                      <Title level={4} style={{ color: '#fff', margin: '4px 0' }}>
+                        {snapshot?.deviceInfo.deviceName || '尚未获取设备信息'}
+                      </Title>
+                      <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12 }}>
+                        {snapshot ? '设备完整状态已同步' : '连接服务器后，将在此展示数字人与机器人状态'}
+                      </Text>
+                    </div>
+                  </Space>
+                </Col>
+                <Col flex="none">
+                  <Row gutter={32}>
+                    <Col>
+                      <Statistic
+                        title={<span style={{ color: 'rgba(255,255,255,0.6)' }}>机器人</span>}
+                        value={snapshot ? (snapshot.deviceInfo.robotConnected ? '已连接' : '未连接') : '—'}
+                        valueStyle={{ color: '#fff', fontSize: 18 }}
+                      />
+                      <Text style={{ color: snapshot && !snapshot.deviceInfo.robotNormal ? '#ffccc7' : 'rgba(255,255,255,0.5)', fontSize: 11 }}>
+                        {snapshot ? (snapshot.deviceInfo.robotNormal ? '运行正常' : snapshot.deviceInfo.robotErrorMessage || '状态异常') : '等待状态'}
+                      </Text>
+                    </Col>
+                    <Col>
+                      <Statistic
+                        title={<span style={{ color: 'rgba(255,255,255,0.6)' }}>电池电量</span>}
+                        value={battery ?? '—'}
+                        suffix={battery != null ? '%' : ''}
+                        valueStyle={{ color: '#fff', fontSize: 18 }}
+                      />
+                      <Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 11 }}>
+                        {snapshot?.deviceInfo.robotCharging ? <><BatteryChargingIcon /> 正在充电</> : snapshot ? '未在充电' : '等待状态'}
+                      </Text>
+                    </Col>
+                    <Col>
+                      <Statistic
+                        title={<span style={{ color: 'rgba(255,255,255,0.6)' }}>机器人 IP</span>}
+                        value={snapshot?.deviceInfo.robotIp || '—'}
+                        valueStyle={{ color: '#fff', fontSize: 14 }}
+                      />
+                      <Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 11 }}>
+                        {snapshot?.deviceInfo.robotConnected ? '网络已关联' : '等待连接'}
+                      </Text>
+                    </Col>
+                  </Row>
+                </Col>
+              </Row>
+            </Card>
+
+            {/* 主内容网格 */}
+            <Row gutter={16}>
+              {/* 左列：当前任务 + 轨迹预览 */}
+              <Col xs={24} lg={16}>
+                {/* 当前任务 */}
+                <Card title={<Space><NodeIndexOutlined /> 当前任务</Space>} extra={
+                  snapshot && <Tag color={statusTagColor(snapshot.taskState.status)}>{statusLabel(snapshot.taskState.status)}</Tag>
+                } style={{ marginBottom: 16 }}>
+                  {snapshot && task ? (
+                    <div>
+                      <Row gutter={16} align="middle">
+                        <Col flex="120px">
+                          <div style={{ textAlign: 'center' }}>
+                            <Text type="secondary" style={{ fontSize: 11 }}>主任务</Text>
+                            <div style={{ fontSize: 36, fontWeight: 500, color: '#1677ff', lineHeight: 1.2 }}>
+                              {String(snapshot.taskState.taskIndex + 1).padStart(2, '0')}
+                              <span style={{ fontSize: 14, color: '#8c8c8c' }}> / {String(snapshot.command?.tasks.length ?? 0).padStart(2, '0')}</span>
+                            </div>
+                          </div>
+                        </Col>
+                        <Col flex="auto">
+                          <Space direction="vertical" size={4}>
+                            <Tag>{taskTypeLabel(task)}</Tag>
+                            <Title level={5} style={{ margin: 0 }} ellipsis={{ tooltip: taskDisplayName(task) }}>
+                              {taskDisplayName(task)}
+                            </Title>
+                            <Text type="secondary" style={{ fontSize: 12 }}>{statusLabel(snapshot.taskState.status)}</Text>
+                          </Space>
+                        </Col>
+                      </Row>
+                      {innerTask && (
+                        <Card size="small" style={{ marginTop: 12, background: '#f6ffed', borderLeft: '3px solid #52c41a' }}>
+                          <Space align="center" style={{ width: '100%' }}>
+                            <ThunderboltOutlined style={{ color: '#52c41a' }} />
+                            <div style={{ flex: 1 }}>
+                              <Text type="secondary" style={{ fontSize: 11 }}>
+                                子任务 {snapshot.taskState.innerTaskIndex + 1} · {taskTypeLabel(innerTask)}
+                              </Text>
+                              <div>
+                                <Text strong style={{ fontSize: 13 }} ellipsis={{ tooltip: taskDisplayName(innerTask) }}>
+                                  {taskDisplayName(innerTask)}
+                                </Text>
+                              </div>
+                            </div>
+                            <Tag color={statusTagColor(snapshot.taskState.innerTaskStatus ?? '')}>
+                              {statusLabel(snapshot.taskState.innerTaskStatus)}
+                            </Tag>
+                          </Space>
+                        </Card>
+                      )}
+                    </div>
+                  ) : (
+                    <Empty
+                      image={Empty.PRESENTED_IMAGE_SIMPLE}
+                      description={snapshot ? '设备当前处于空闲状态，可以发起对话或独立导航。' : '连接成功后会自动发送 getState，获取当前主任务和子任务。'}
+                    />
+                  )}
+                </Card>
+
+                {/* 轨迹预览 */}
+                <Card
+                  title={<Space><EnvironmentOutlined /> {flowName}</Space>}
+                  extra={
+                    <Space>
+                      <Text type="secondary">{routePoints.length} 个导航点</Text>
+                      {routePoints.length > 0 && (
+                        <Button size="small" type="link" onClick={() => setPointsModalOpen(true)}>
+                          全部点位
+                        </Button>
+                      )}
+                    </Space>
+                  }
+                  style={{ marginBottom: 16 }}
+                >
+                  {routePoints.length ? (
+                    <div>
+                      <Row gutter={[12, 12]} style={{ marginBottom: 16 }}>
+                        {routePoints.map((rp, idx) => (
+                          <Col key={rp.key} flex="1 1 120px">
+                            <Tooltip title={rp.canNavigate ? `跳转到 ${rp.name}` : rp.name}>
+                              <div
+                                style={{
+                                  textAlign: 'center',
+                                  cursor: rp.canNavigate ? 'pointer' : 'default',
+                                  opacity: rp.canNavigate ? 1 : 0.6,
+                                  transition: 'transform 0.15s',
+                                }}
+                                onClick={() => rp.canNavigate && requestJump(rp)}
+                              >
+                                <div
+                                  style={{
+                                    width: 44, height: 44, borderRadius: '50%',
+                                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                                    background: routeProgressColor(rp.progress),
+                                    color: rp.progress === 'pending' ? '#8c8c8c' : '#fff',
+                                    fontSize: 14, fontWeight: 600,
+                                    border: rp.progress === 'active' ? '4px solid #d6e4ff' : '1px solid #d9d9d9',
+                                    marginBottom: 8,
+                                  }}
+                                >
+                                  {rp.progress === 'completed' ? <CheckOutlined /> : idx + 1}
+                                </div>
+                                <div style={{ fontSize: 12, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                  {rp.name}
+                                </div>
+                                <div style={{ fontSize: 10, color: '#8c8c8c' }}>{routeProgressText(rp.progress)}</div>
+                              </div>
+                            </Tooltip>
+                          </Col>
+                        ))}
+                      </Row>
+                      <Divider style={{ margin: '8px 0' }} />
+                      <Space size="large">
+                        <Space>
+                          <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#52c41a' }} />
+                          <Text type="secondary" style={{ fontSize: 12 }}>前序</Text>
+                        </Space>
+                        <Space>
+                          <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#1677ff' }} />
+                          <Text type="secondary" style={{ fontSize: 12 }}>当前</Text>
+                        </Space>
+                        <Space>
+                          <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#d9d9d9' }} />
+                          <Text type="secondary" style={{ fontSize: 12 }}>待执行</Text>
+                        </Space>
+                        <Text type="secondary" style={{ fontSize: 11, marginLeft: 'auto' }}>
+                          点击可用点位可跳转 · 暂停时需先继续任务
+                        </Text>
+                      </Space>
+                    </div>
+                  ) : (
+                    <Empty
+                      image={Empty.PRESENTED_IMAGE_SIMPLE}
+                      description={snapshot?.command ? '任务树中没有满足显示条件的根导航任务。' : '轨迹仅展示流程中的可见根导航任务，不代表机器人实际运动路径。'}
+                    />
+                  )}
+                </Card>
+              </Col>
+
+              {/* 右列：控制动作 + 文本提问 + 直达导航 */}
+              <Col xs={24} lg={8}>
+                {/* 控制动作 */}
+                <Card
+                  title={<Space><ThunderboltOutlined /> 控制动作</Space>}
+                  extra={
+                    <Tag color={canControl ? 'success' : 'default'}>
+                      {canControl ? '可控制' : '已锁定'}
+                    </Tag>
+                  }
+                  style={{ marginBottom: 16 }}
+                >
+                  {CONTROL_GROUPS.map((group, gi) => (
+                    <div key={group.title} style={gi > 0 ? { marginTop: 16, paddingTop: 16, borderTop: '1px solid #f0f0f0' } : undefined}>
+                      <div style={{ marginBottom: 8 }}>
+                        <Text strong style={{ fontSize: 13 }}>{group.title}</Text>
+                        <br />
+                        <Text type="secondary" style={{ fontSize: 11 }}>{group.description}</Text>
                       </div>
-                      <div className="control-grid">
-                        {group.actions.map(({ key, label, icon: Icon, tone }) => {
-                          const enabled = Boolean(canControl && snapshot?.buttons[key]);
+                      <Row gutter={[8, 8]}>
+                        {group.items.map((item) => {
+                          const enabled = Boolean(canControl && snapshot?.buttons[item.key]);
                           return (
-                            <button
-                              className={`control-button ${tone ? `control-button--${tone}` : ''}`}
-                              type="button"
-                              key={key}
-                              disabled={!enabled}
-                              onClick={() => requestAction(key)}
-                              title={!canControl ? '等待可控制的设备快照' : !snapshot?.buttons[key] ? '当前设备状态不允许此操作' : label}
-                            >
-                              <Icon size={17} strokeWidth={1.8} />
-                              <span>{label}</span>
-                              <ArrowRight size={13} className="control-button__arrow" />
-                            </button>
+                            <Col span={12} key={item.key}>
+              <Button
+                block
+                icon={item.icon}
+                disabled={!enabled}
+                danger={item.danger}
+                onClick={() => handleControlClick(item)}
+                style={{ textAlign: 'left', height: 40 }}
+              >
+                {item.label}
+              </Button>
+                            </Col>
                           );
                         })}
-                      </div>
+                      </Row>
                     </div>
                   ))}
-                </div>
-              </section>
+                </Card>
 
-              <section className="panel question-panel" aria-labelledby="question-title">
-                <div className="compact-heading">
-                  <span className="compact-heading__icon"><MessageSquareText size={18} /></span>
-                  <div><h2 id="question-title">文本提问</h2><p>按正常问答流程处理</p></div>
-                </div>
-                <form onSubmit={submitQuestion}>
-                  <label className="sr-only" htmlFor="question">输入向数字人提出的问题</label>
-                  <textarea
-                    id="question"
-                    value={question}
-                    onChange={(event) => setQuestion(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-                        event.preventDefault();
-                        if (canControl && question.trim()) execute('textQuestion', { text: question });
-                      }
-                    }}
-                    placeholder="例如：请介绍一下序厅的主要内容。"
-                    maxLength={500}
-                    rows={3}
-                  />
-                  <div className="form-footer">
-                    <span>Ctrl + Enter 发送 · {question.length}/500</span>
-                    <button className="button button--primary button--compact" type="submit" disabled={!canControl || !question.trim()}>
-                      <Send size={14} />发送
-                    </button>
-                  </div>
-                </form>
-              </section>
-
-              <section className="panel direct-panel" aria-labelledby="direct-title">
-                <div className="compact-heading">
-                  <span className="compact-heading__icon"><MapPin size={18} /></span>
-                  <div><h2 id="direct-title">直达导航</h2><p>独立点位导航，不改变任务索引</p></div>
-                </div>
-                <form onSubmit={submitDirectNavigation}>
-                  <div className="direct-fields">
-                    <div>
-                      <label htmlFor="point">点位值</label>
-                      <input id="point" value={point} onChange={(event) => setPoint(event.target.value)} placeholder="例如 cdz" autoComplete="off" />
-                    </div>
-                    <div>
-                      <label htmlFor="pointName">点位名称</label>
-                      <input id="pointName" value={pointName} onChange={(event) => setPointName(event.target.value)} placeholder="例如 会议室" />
-                    </div>
-                  </div>
-                  <button
-                    className="button button--outline button--full"
-                    type="submit"
-                    disabled={!canControl || !snapshot?.deviceInfo.robotConnected || !point.trim() || !pointName.trim()}
-                  >
-                    <Navigation size={15} />导航到此点位
-                  </button>
-                </form>
-              </section>
-            </div>
-          </div>
-
-          <section className="panel logs-panel" aria-labelledby="logs-title">
-            <div className="logs-heading">
-              <div className="compact-heading">
-                <span className="compact-heading__icon"><Terminal size={18} /></span>
-                <div><h2 id="logs-title">实时报文</h2><p>保留最近 50 条，点击展开原始 JSON</p></div>
-              </div>
-              <div className="logs-tools">
-                <div className="log-filters" aria-label="报文筛选">
-                  {([
-                    ['all', '全部'],
-                    ['incoming', '接收'],
-                    ['outgoing', '发送'],
-                    ['system', '系统'],
-                  ] as const).map(([value, label]) => (
-                    <button
-                      type="button"
-                      key={value}
-                      className={logFilter === value ? 'is-active' : ''}
-                      onClick={() => setLogFilter(value)}
-                      aria-pressed={logFilter === value}
-                    >{label}</button>
-                  ))}
-                </div>
-                <button className="icon-button" type="button" onClick={controller.clearLogs} disabled={!logs.length} aria-label="清空报文" title="清空报文">
-                  <Trash2 size={16} />
-                </button>
-              </div>
-            </div>
-
-            {filteredLogs.length ? (
-              <div className="log-list">
-                {filteredLogs.map((entry) => {
-                  const expanded = expandedLog === entry.id;
-                  return (
-                    <div className={`log-entry ${expanded ? 'log-entry--expanded' : ''}`} key={entry.id}>
-                      <button
-                        type="button"
-                        className="log-entry__summary"
-                        onClick={() => setExpandedLog(expanded ? null : entry.id)}
-                        aria-expanded={expanded}
-                      >
-                        <span className={`log-direction log-direction--${entry.direction}`}>
-                          {entry.direction === 'incoming' ? '接收' : entry.direction === 'outgoing' ? '发送' : '系统'}
-                        </span>
-                        <code>{entry.type}</code>
-                        <span className="log-preview">{entry.raw}</span>
-                        <time dateTime={entry.timestamp}>{formatTime(entry.timestamp)}</time>
-                        <ChevronDown size={15} className={expanded ? 'rotate-180' : ''} />
-                      </button>
-                      {expanded && <pre>{prettyRaw(entry.raw)}</pre>}
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="logs-empty"><Clock3 size={17} />{logs.length ? '当前筛选下没有报文' : '连接后可在这里核对发送与接收的原始消息'}</div>
-            )}
-          </section>
-
-          <footer className="workspace-footer">
-            <span><Ellipsis size={14} />{activeUrl || socketPreview}</span>
-            <span>WebSocket / JSON · 完整快照驱动</span>
-          </footer>
-        </main>
-      </div>
-
-      {modal?.kind === 'confirm' && (
-        <Modal title={modal.data.title} eyebrow="ACTION CONFIRMATION" onClose={() => setModal(null)}>
-          <div className={`confirm-symbol ${modal.data.tone === 'danger' ? 'confirm-symbol--danger' : ''}`}>
-            {modal.data.tone === 'danger' ? <ShieldAlert size={24} /> : <Navigation size={24} />}
-          </div>
-          <p className="confirm-description">{modal.data.description}</p>
-          <div className="confirm-note"><Info size={15} />确认时会再次按最新设备状态校验，不会重发断线前的动作。</div>
-          <div className="modal-actions">
-            <button className="button button--light" type="button" onClick={() => setModal(null)}>取消</button>
-            <button
-              className={`button ${modal.data.tone === 'danger' ? 'button--danger' : 'button--primary'}`}
-              type="button"
-              onClick={() => execute(modal.data.action, modal.data.params)}
-            >
-              {modal.data.confirmLabel}<ArrowRight size={15} />
-            </button>
-          </div>
-        </Modal>
-      )}
-
-      {modal?.kind === 'points' && (
-        <Modal title={flowName} eyebrow={`ALL ROUTE POINTS / ${routePoints.length}`} onClose={() => setModal(null)} wide>
-          <p className="modal-intro">轨迹顺序与原始根任务数组一致；序号对应可见轨迹点，跳转使用节点的 step_id。</p>
-          <div className="all-points-list">
-            {routePoints.map((routePoint, index) => (
-              <div className="all-point" key={routePoint.key}>
-                <span className={`all-point__node all-point__node--${routePoint.progress}`}>
-                  {routePoint.progress === 'completed' ? <Check size={16} /> : index + 1}
-                </span>
-                <div className="all-point__copy">
-                  <strong>{routePoint.name}</strong>
-                  <span>主任务 {routePoint.rootIndex + 1} · step_id {routePoint.stepId}</span>
-                </div>
-                <span className="all-point__status">
-                  {routePoint.progress === 'active' ? '当前位置' : routePoint.progress === 'completed' ? '前序位置' : '待执行'}
-                </span>
-                <button
-                  className="button button--light button--compact"
-                  type="button"
-                  disabled={!routePoint.canNavigate}
-                  onClick={() => requestJump(routePoint)}
+                {/* 文本提问 */}
+                <Card
+                  size="small"
+                  title={<Space><MessageOutlined /> 文本提问</Space>}
+                  style={{ marginBottom: 16 }}
                 >
-                  跳转<ChevronRight size={14} />
-                </button>
-              </div>
-            ))}
-          </div>
-        </Modal>
-      )}
+                  <form onSubmit={submitQuestion}>
+                    <Input.TextArea
+                      value={question}
+                      onChange={(e) => setQuestion(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                          e.preventDefault();
+                          if (canControl && question.trim()) execute('textQuestion', { text: question });
+                        }
+                      }}
+                      placeholder="例如：请介绍一下序厅的主要内容。"
+                      maxLength={500}
+                      rows={3}
+                    />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
+                      <Text type="secondary" style={{ fontSize: 11 }}>Ctrl + Enter 发送 · {question.length}/500</Text>
+                      <Button type="primary" size="small" htmlType="submit" icon={<SendOutlined />} disabled={!canControl || !question.trim()}>
+                        发送
+                      </Button>
+                    </div>
+                  </form>
+                </Card>
 
-      {toast && (
-        <div className={`toast toast--${toast.tone}`} role="status">
-          {toast.tone === 'success' ? <CheckCircle2 size={18} /> : <Info size={18} />}
-          <span>{toast.message}</span>
-          <button type="button" onClick={() => setToast(null)} aria-label="关闭提示"><X size={15} /></button>
-        </div>
-      )}
-    </div>
+                {/* 直达导航 */}
+                <Card
+                  size="small"
+                  title={<Space><EnvironmentOutlined /> 直达导航</Space>}
+                >
+                  <form onSubmit={submitDirectNavigation}>
+                    <Row gutter={8} style={{ marginBottom: 8 }}>
+                      <Col span={10}>
+                        <Text type="secondary" style={{ fontSize: 11 }}>点位值</Text>
+                        <Input
+                          size="small"
+                          value={point}
+                          onChange={(e) => setPoint(e.target.value)}
+                          placeholder="例如 cdz"
+                          autoComplete="off"
+                        />
+                      </Col>
+                      <Col span={14}>
+                        <Text type="secondary" style={{ fontSize: 11 }}>点位名称</Text>
+                        <Input
+                          size="small"
+                          value={pointName}
+                          onChange={(e) => setPointName(e.target.value)}
+                          placeholder="例如 会议室"
+                        />
+                      </Col>
+                    </Row>
+                    <Button
+                      block
+                      icon={<EnvironmentOutlined />}
+                      htmlType="submit"
+                      disabled={!canControl || !snapshot?.deviceInfo.robotConnected || !point.trim() || !pointName.trim()}
+                    >
+                      导航到此点位
+                    </Button>
+                  </form>
+                </Card>
+              </Col>
+            </Row>
+
+            {/* 实时报文 */}
+            <Card
+              title={<Space><CodeOutlined /> 实时报文</Space>}
+              extra={
+                <Space>
+                  <Segmented
+                    size="small"
+                    value={logFilter}
+                    onChange={(v) => setLogFilter(v as 'all' | LogDirection)}
+                    options={[
+                      { label: '全部', value: 'all' },
+                      { label: '接收', value: 'incoming' },
+                      { label: '发送', value: 'outgoing' },
+                      { label: '系统', value: 'system' },
+                    ]}
+                  />
+                  <Popconfirm
+                    title="清空所有报文？"
+                    onConfirm={controller.clearLogs}
+                    disabled={!logs.length}
+                  >
+                    <Button size="small" danger icon={<CloseOutlined />} disabled={!logs.length} />
+                  </Popconfirm>
+                </Space>
+              }
+              style={{ marginTop: 16 }}
+            >
+              {filteredLogs.length ? (
+                <div style={{ maxHeight: 400, overflowY: 'auto' }}>
+                  {filteredLogs.map((entry) => {
+                    const expanded = expandedLog === entry.id;
+                    return (
+                      <div key={entry.id} style={{ borderBottom: '1px solid #f0f0f0' }}>
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            padding: '8px 0',
+                            cursor: 'pointer',
+                          }}
+                          onClick={() => setExpandedLog(expanded ? null : entry.id)}
+                        >
+                          <Tag
+                            color={LOG_DIR_COLORS[entry.direction]}
+                            style={{ margin: 0, minWidth: 40, textAlign: 'center', flexShrink: 0 }}
+                          >
+                            {LOG_DIR_LABELS[entry.direction]}
+                          </Tag>
+                          <Text
+                            code
+                            style={{ fontSize: 11, flexShrink: 0, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                          >
+                            {entry.type}
+                          </Text>
+                          <div
+                            style={{
+                              flex: 1,
+                              minWidth: 0,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                              fontSize: 11,
+                              fontFamily: 'monospace',
+                              color: 'rgba(0, 0, 0, 0.45)',
+                            }}
+                            title={entry.raw}
+                          >
+                            {entry.raw}
+                          </div>
+                          <Text
+                            type="secondary"
+                            style={{ fontSize: 11, fontFamily: 'monospace', flexShrink: 0 }}
+                          >
+                            {formatTime(entry.timestamp)}
+                          </Text>
+                        </div>
+                        {expanded && (
+                          <pre style={{
+                            margin: '0 0 8px',
+                            padding: 12,
+                            background: '#1a1a2e',
+                            color: '#a9dc76',
+                            borderRadius: 6,
+                            fontSize: 11,
+                            lineHeight: 1.6,
+                            overflow: 'auto',
+                            maxHeight: 300,
+                            fontFamily: 'monospace',
+                          }}>
+                            {prettyRaw(entry.raw)}
+                          </pre>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <Empty
+                  image={Empty.PRESENTED_IMAGE_SIMPLE}
+                  description={logs.length ? '当前筛选下没有报文' : '连接后可在这里核对发送与接收的原始消息'}
+                />
+              )}
+            </Card>
+
+            {/* 底部信息 */}
+            <div style={{ padding: '16px 0', textAlign: 'center' }}>
+              <Space size="large">
+                <Text type="secondary" style={{ fontSize: 11 }}>
+                  <ApiOutlined /> {activeUrl || socketPreview}
+                </Text>
+                <Text type="secondary" style={{ fontSize: 11 }}>WebSocket / JSON · 完整快照驱动</Text>
+              </Space>
+            </div>
+          </Content>
+        </Layout>
+      </Layout>
+
+      {/* 全部点位弹窗 */}
+      <Modal
+        title={flowName}
+        open={pointsModalOpen}
+        onCancel={() => setPointsModalOpen(false)}
+        footer={null}
+        width={600}
+      >
+        <Paragraph type="secondary" style={{ fontSize: 12 }}>
+          轨迹顺序与原始根任务数组一致；序号对应可见轨迹点，跳转使用节点的 step_id。
+        </Paragraph>
+        <List
+          dataSource={routePoints}
+          renderItem={(rp, index) => (
+            <List.Item
+              actions={[
+                <Button
+                  size="small"
+                  disabled={!rp.canNavigate}
+                  onClick={() => { requestJump(rp); setPointsModalOpen(false); }}
+                >
+                  跳转
+                </Button>,
+              ]}
+            >
+              <List.Item.Meta
+                avatar={
+                  <div style={{
+                    width: 32, height: 32, borderRadius: '50%',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    background: routeProgressColor(rp.progress),
+                    color: rp.progress === 'pending' ? '#8c8c8c' : '#fff',
+                    fontSize: 12, fontWeight: 600,
+                  }}>
+                    {rp.progress === 'completed' ? <CheckOutlined /> : index + 1}
+                  </div>
+                }
+                title={rp.name}
+                description={
+                  <Space>
+                    <Text type="secondary" style={{ fontSize: 11 }}>主任务 {rp.rootIndex + 1}</Text>
+                    <Text type="secondary" style={{ fontSize: 11 }}>step_id {rp.stepId}</Text>
+                    <Tag style={{ fontSize: 10 }}>{routeProgressText(rp.progress)}</Tag>
+                  </Space>
+                }
+              />
+            </List.Item>
+          )}
+        />
+      </Modal>
+    </AntApp>
   );
 }
 
