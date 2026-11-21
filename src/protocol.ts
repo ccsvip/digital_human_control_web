@@ -556,3 +556,132 @@ export function isErrorResponse(message: unknown): message is ErrorResponse {
   if (!isRecord(message)) return false;
   return message.type === 'error' && isRecord(message.error);
 }
+
+// ===================== 音色绑定协议 =====================
+
+/** 音色信息 */
+export interface VoiceTone {
+  id: number;
+  displayName: string;
+  voiceCode: string;
+  audioUrl: string;
+  iconUrl: string;
+  speechRate: number;
+  pitchRate: number;
+  volume: number;
+  customTestText: string;
+  gender: string;
+  isDefault: boolean;
+}
+
+/** 音色列表响应（GET /ai-models/tts/options/） */
+export interface TtsOptionsResponse {
+  voices: VoiceTone[];
+  defaultVoiceId: number | null;
+}
+
+/** 音色绑定请求 */
+export interface VoiceBindRequest {
+  type: 'device.voice.bind';
+  id: string;
+  payload: {
+    deviceCode: string;
+    voice: {
+      id: number;
+      name: string;
+      voiceCode: string;
+    };
+  };
+}
+
+/** 音色绑定成功回执 */
+export interface VoiceBoundMessage {
+  type: 'device.voice.bound';
+  id: string;
+  payload: {
+    deviceCode: string;
+    voice: {
+      id: number;
+      name: string;
+      voiceCode: string;
+    };
+  };
+}
+
+export function buildHttpBaseUrl(config: Pick<ConnectionConfig, 'server' | 'port'>): string {
+  const server = config.server.trim();
+  const port = Number(config.port);
+  if (!server) throw new Error('请输入服务器地址');
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('端口必须是 1–65535 的整数');
+  let url: URL;
+  try {
+    url = new URL(/^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(server) ? server : `http://${server}`);
+  } catch {
+    throw new Error('服务器地址格式无效');
+  }
+  if (!['http:', 'https:'].includes(url.protocol)) {
+    throw new Error('服务器地址仅支持 HTTP(S) 协议');
+  }
+  url.port = String(port);
+  url.hash = '';
+  return url.toString().replace(/\/$/, '');
+}
+
+export function buildTtsOptionsUrl(config: Pick<ConnectionConfig, 'server' | 'port'>): string {
+  return `${buildHttpBaseUrl(config)}/api/v1/ai-models/tts/options/`;
+}
+
+export function buildTtsRuntimeUrl(config: Pick<ConnectionConfig, 'server' | 'port'>): string {
+  return `${buildHttpBaseUrl(config)}/api/v1/ai-models/tts/runtime/`;
+}
+
+export function createVoiceBindRequest(deviceCode: string, voice: VoiceTone, id?: string): VoiceBindRequest {
+  const code = deviceCode.trim();
+  if (!code) throw new Error('设备号不能为空');
+  return {
+    type: 'device.voice.bind',
+    id: id ?? `web-voice-bind-${Date.now().toString(36)}`,
+    payload: {
+      deviceCode: code,
+      voice: {
+        id: voice.id,
+        name: voice.displayName,
+        voiceCode: voice.voiceCode,
+      },
+    },
+  };
+}
+
+function parseVoiceTone(value: unknown, path: string): VoiceTone {
+  const obj = requiredRecord(value, path);
+  return {
+    id: typeof obj.id === 'number' ? obj.id : 0,
+    displayName: typeof obj.displayName === 'string' ? obj.displayName : (typeof obj.name === 'string' ? obj.name : ''),
+    voiceCode: typeof obj.voiceCode === 'string' ? obj.voiceCode : '',
+    audioUrl: typeof obj.audioUrl === 'string' ? obj.audioUrl : '',
+    iconUrl: typeof obj.iconUrl === 'string' ? obj.iconUrl : (typeof obj.avatarPath === 'string' ? obj.avatarPath : ''),
+    speechRate: typeof obj.speechRate === 'number' ? obj.speechRate : 1,
+    pitchRate: typeof obj.pitchRate === 'number' ? obj.pitchRate : 1,
+    volume: typeof obj.volume === 'number' ? obj.volume : 50,
+    customTestText: typeof obj.customTestText === 'string' ? obj.customTestText : '',
+    gender: typeof obj.gender === 'string' ? obj.gender : '',
+    isDefault: typeof obj.isDefault === 'boolean' ? obj.isDefault : false,
+  };
+}
+
+export function parseTtsOptions(data: unknown): TtsOptionsResponse {
+  const root = requiredRecord(data, 'TTS options');
+  const rawVoices = root.voices ?? root.items ?? root.list;
+  if (!Array.isArray(rawVoices)) throw new Error('音色列表必须是数组');
+  const voices = rawVoices.map((v, i) => parseVoiceTone(v, `voices[${i}]`));
+  const defaultVoice = voices.find((v) => v.isDefault);
+  const defaultVoiceId = defaultVoice ? defaultVoice.id : (typeof root.defaultVoiceId === 'number' ? root.defaultVoiceId : null);
+  return { voices, defaultVoiceId };
+}
+
+export function isVoiceBoundMessage(message: unknown): message is VoiceBoundMessage {
+  if (!isRecord(message)) return false;
+  return message.type === 'device.voice.bound' && isRecord(message.payload);
+}
+
+

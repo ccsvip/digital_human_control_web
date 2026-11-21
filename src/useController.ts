@@ -2,14 +2,19 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   BUTTON_KEYS,
   buildRoutePoints,
+  buildTtsOptionsUrl,
+  buildTtsRuntimeUrl,
   buildWebSocketUrl,
   createDeviceAction,
   createPointGroupRequest,
   createTaskModeRequest,
+  createVoiceBindRequest,
   isErrorResponse,
+  isVoiceBoundMessage,
   parseFlowSnapshot,
   parsePointGroup,
   parseTaskModes,
+  parseTtsOptions,
 } from './protocol';
 import type {
   ActionName,
@@ -20,6 +25,7 @@ import type {
   FlowSnapshot,
   PointGroup,
   TaskModes,
+  VoiceTone,
 } from './protocol';
 
 export const DEFAULT_CONFIG: ConnectionConfig = {
@@ -77,6 +83,12 @@ export function useController() {
   const [taskModes, setTaskModes] = useState<TaskModes | null>(null);
   const [pointGroupLoading, setPointGroupLoading] = useState(false);
   const [taskModesLoading, setTaskModesLoading] = useState(false);
+  const [voiceTones, setVoiceTones] = useState<VoiceTone[]>([]);
+  const [currentVoice, setCurrentVoice] = useState<VoiceTone | null>(null);
+  const [voiceLoading, setVoiceLoading] = useState(false);
+  const [voiceBinding, setVoiceBinding] = useState(false);
+  const [voicePreviewing, setVoicePreviewing] = useState(false);
+  const [previewText, setPreviewText] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const configRef = useRef(config);
@@ -89,10 +101,13 @@ export function useController() {
   const logCounterRef = useRef(0);
   const pointGroupReqIdRef = useRef<string | null>(null);
   const taskModesReqIdRef = useRef<string | null>(null);
+  const voiceBindReqIdRef = useRef<string | null>(null);
+  const voiceTonesRef = useRef<VoiceTone[]>([]);
 
   configRef.current = config;
   snapshotRef.current = snapshot;
   screenOnlineRef.current = screenOnline;
+  voiceTonesRef.current = voiceTones;
 
   const appendLog = useCallback((direction: LogDirection, type: string, raw: string) => {
     logCounterRef.current += 1;
@@ -123,6 +138,13 @@ export function useController() {
     setTaskModesLoading(false);
     pointGroupReqIdRef.current = null;
     taskModesReqIdRef.current = null;
+    setVoiceTones([]);
+    setCurrentVoice(null);
+    setVoiceLoading(false);
+    setVoiceBinding(false);
+    setVoicePreviewing(false);
+    setPreviewText(null);
+    voiceBindReqIdRef.current = null;
   }, [clearQueryTimer]);
 
   const sendAction = useCallback(
@@ -190,6 +212,92 @@ export function useController() {
       appendLog('system', 'point_group_send_error', reason instanceof Error ? reason.message : '点位分组请求发送失败');
     }
   }, [appendLog]);
+
+  const fetchVoices = useCallback(async () => {
+    const currentConfig = configRef.current;
+    if (!currentConfig.deviceCode.trim()) return;
+    setVoiceLoading(true);
+    try {
+      const url = buildTtsOptionsUrl(currentConfig);
+      const resp = await fetch(url, { headers: { 'X-Device-Code': currentConfig.deviceCode } });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      const result = parseTtsOptions(data);
+      setVoiceTones(result.voices);
+      if (result.defaultVoiceId != null) {
+        const found = result.voices.find((v) => v.id === result.defaultVoiceId);
+        if (found) setCurrentVoice(found);
+      } else if (result.voices.length > 0) {
+        setCurrentVoice(result.voices[0]);
+      }
+    } catch (reason) {
+      appendLog('system', 'voice_options_error', reason instanceof Error ? reason.message : '获取音色列表失败');
+    } finally {
+      setVoiceLoading(false);
+    }
+  }, [appendLog]);
+
+  const bindVoice = useCallback(
+    (voice: VoiceTone) => {
+      const socket = wsRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error('WebSocket 尚未连接');
+      const currentConfig = configRef.current;
+      if (!currentConfig.deviceCode.trim()) throw new Error('设备号不能为空');
+      try {
+        const req = createVoiceBindRequest(currentConfig.deviceCode, voice);
+        voiceBindReqIdRef.current = req.id;
+        setVoiceBinding(true);
+        const raw = JSON.stringify(req);
+        socket.send(raw);
+        appendLog('outgoing', 'device.voice.bind', raw);
+      } catch (reason) {
+        setVoiceBinding(false);
+        throw reason;
+      }
+    },
+    [appendLog],
+  );
+
+  const previewVoice = useCallback(
+    async (voice: VoiceTone, text?: string) => {
+      const currentConfig = configRef.current;
+      if (!currentConfig.deviceCode.trim()) throw new Error('设备号不能为空');
+      const sampleText = text?.trim() || voice.customTestText || '你好，这是一段音色试听。';
+      setVoicePreviewing(true);
+      setPreviewText(sampleText);
+      try {
+        const url = buildTtsRuntimeUrl(currentConfig);
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'X-Device-Code': currentConfig.deviceCode,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ text: sampleText, voiceId: voice.id, wrapWav: true }),
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const blob = await resp.blob();
+        const audioUrl = URL.createObjectURL(blob);
+        const audio = new Audio(audioUrl);
+        audio.onended = () => {
+          URL.revokeObjectURL(audioUrl);
+          setVoicePreviewing(false);
+          setPreviewText(null);
+        };
+        audio.onerror = () => {
+          URL.revokeObjectURL(audioUrl);
+          setVoicePreviewing(false);
+          setPreviewText(null);
+        };
+        await audio.play();
+      } catch (reason) {
+        setVoicePreviewing(false);
+        setPreviewText(null);
+        throw reason;
+      }
+    },
+    [],
+  );
 
   const fetchTaskModes = useCallback(() => {
     const socket = wsRef.current;
@@ -291,6 +399,7 @@ export function useController() {
         requestState();
         fetchPoints();
         fetchTaskModes();
+        fetchVoices();
       };
 
       socket.onmessage = (event) => {
@@ -359,6 +468,15 @@ export function useController() {
           return;
         }
 
+        if (isVoiceBoundMessage(message)) {
+          const boundVoice = message.payload.voice;
+          const matched = voiceTonesRef.current.find((v) => v.id === boundVoice.id) ?? null;
+          setCurrentVoice(matched ?? { id: boundVoice.id, displayName: boundVoice.name, voiceCode: boundVoice.voiceCode, audioUrl: '', iconUrl: '', speechRate: 1, pitchRate: 1, volume: 50, customTestText: '', gender: '', isDefault: false });
+          setVoiceBinding(false);
+          voiceBindReqIdRef.current = null;
+          return;
+        }
+
         if (isErrorResponse(message)) {
           const err = message as { type: 'error'; id: string | null; error: { code: string; message: string } };
           if (err.id === pointGroupReqIdRef.current) {
@@ -369,6 +487,10 @@ export function useController() {
             setTaskModesLoading(false);
             taskModesReqIdRef.current = null;
             appendLog('system', 'task_mode_error', `任务模式请求失败: ${err.error.message} (code: ${err.error.code})`);
+          } else if (err.id === voiceBindReqIdRef.current) {
+            setVoiceBinding(false);
+            voiceBindReqIdRef.current = null;
+            appendLog('system', 'voice_bind_error', `音色绑定失败: ${err.error.message} (code: ${err.error.code})`);
           }
           return;
         }
@@ -405,7 +527,7 @@ export function useController() {
         }
       };
     },
-    [appendLog, clearRealtime, clearQueryTimer, fetchPoints, fetchTaskModes, requestState],
+    [appendLog, clearRealtime, clearQueryTimer, fetchPoints, fetchTaskModes, fetchVoices, requestState],
   );
   connectRef.current = connect;
 
@@ -466,12 +588,21 @@ export function useController() {
     taskModes,
     pointGroupLoading,
     taskModesLoading,
+    voiceTones,
+    currentVoice,
+    voiceLoading,
+    voiceBinding,
+    voicePreviewing,
+    previewText,
     connect,
     disconnect,
     requestState,
     sendAction,
     fetchPoints,
     fetchTaskModes,
+    fetchVoices,
+    bindVoice,
+    previewVoice,
     clearError: () => setError(null),
     clearLogs: () => setLogs([]),
   };

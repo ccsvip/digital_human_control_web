@@ -57,7 +57,7 @@ import {
   ThunderboltOutlined,
   WarningOutlined,
 } from '@ant-design/icons';
-import type { ActionName, ButtonKey, PointItem, RoutePoint } from './protocol';
+import type { ActionName, ButtonKey, PointItem, RoutePoint, VoiceTone } from './protocol';
 import type { ActionParams, ConnectionConfig } from './protocol';
 import {
   buildRoutePoints,
@@ -203,6 +203,12 @@ function App() {
     taskModes,
     pointGroupLoading,
     taskModesLoading,
+    voiceTones,
+    currentVoice,
+    voiceLoading,
+    voiceBinding,
+    voicePreviewing,
+    previewText,
   } = controller;
 
   const [question, setQuestion] = useState('');
@@ -214,6 +220,7 @@ function App() {
   const [logFilter, setLogFilter] = useState<'all' | LogDirection>('all');
   const [expandedLog, setExpandedLog] = useState<string | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
+  const [selectedVoice, setSelectedVoice] = useState<VoiceTone | null>(null);
 
   const routePoints = useMemo(() => buildRoutePoints(snapshot, canControl), [snapshot, canControl]);
   const { task, innerTask } = getCurrentTasks(snapshot);
@@ -1120,6 +1127,140 @@ function App() {
                         ]}
                       />
                     </div>
+                  )}
+                </Card>
+
+                {/* 音色选择 */}
+                <Card
+                  size="small"
+                  title={<Space><AudioOutlined /> 音色选择</Space>}
+                  extra={
+                    <Space size={4}>
+                      {currentVoice && (
+                        <Tag color="blue" style={{ fontSize: 10, margin: 0 }}>
+                          当前: {currentVoice.displayName}
+                        </Tag>
+                      )}
+                      <Button
+                        size="small"
+                        type="text"
+                        icon={voiceLoading ? <LoadingOutlined /> : <ReloadOutlined />}
+                        onClick={controller.fetchVoices}
+                        disabled={status !== 'connected'}
+                      />
+                    </Space>
+                  }
+                >
+                  {voiceTones.length > 0 ? (
+                    <div>
+                      <List
+                        size="small"
+                        dataSource={voiceTones}
+                        renderItem={(vt: VoiceTone) => {
+                          const isCurrent = currentVoice?.id === vt.id;
+                          const isSelected = selectedVoice?.id === vt.id;
+                          return (
+                            <List.Item
+                              style={{
+                                padding: '6px 0',
+                                background: isSelected ? '#f0f5ff' : undefined,
+                                paddingLeft: isSelected ? 8 : undefined,
+                                borderRadius: isSelected ? 6 : undefined,
+                              }}
+                              actions={[
+                                <Button
+                                  key="preview"
+                                  size="small"
+                                  icon={voicePreviewing ? <LoadingOutlined /> : <PlayCircleOutlined />}
+                                  disabled={voicePreviewing || !canControl}
+                                  onClick={() => {
+                                    try {
+                                      controller.previewVoice(vt);
+                                    } catch (reason) {
+                                      notify(reason instanceof Error ? reason.message : '播报失败', 'error');
+                                    }
+                                  }}
+                                >
+                                  播报
+                                </Button>,
+                                <Button
+                                  key="bind"
+                                  size="small"
+                                  type={isCurrent ? 'default' : 'primary'}
+                                  loading={voiceBinding && isSelected}
+                                  disabled={!canControl || isCurrent || voiceBinding}
+                                  onClick={() => {
+                                    Modal.confirm({
+                                      title: `绑定音色“${vt.displayName}”？`,
+                                      content: '将通过 WebSocket 向设备发送音色绑定指令，设备会使用此音色进行语音合成。',
+                                      okText: '确认绑定',
+                                      cancelText: '取消',
+                                      onOk: () => {
+                                        try {
+                                          controller.bindVoice(vt);
+                                          notify('音色绑定指令已发送');
+                                        } catch (reason) {
+                                          notify(reason instanceof Error ? reason.message : '音色绑定失败', 'error');
+                                        }
+                                      },
+                                    });
+                                  }}
+                                >
+                                  {isCurrent ? '已绑定' : '绑定'}
+                                </Button>,
+                              ]}
+                            >
+                              <List.Item.Meta
+                                avatar={
+                                  <Avatar
+                                    size={28}
+                                    shape="circle"
+                                    icon={<AudioOutlined />}
+                                    style={{
+                                      background: isCurrent ? '#52c41a' : '#1677ff',
+                                      fontSize: 11,
+                                    }}
+                                  />
+                                }
+                                title={
+                                  <Space size={4}>
+                                    <Text
+                                      strong
+                                      style={{ fontSize: 13, cursor: 'pointer' }}
+                                    onClick={() => setSelectedVoice(isSelected ? null : vt)}
+                                  >
+                                    {vt.displayName}
+                                  </Text>
+                                  {vt.isDefault && <Tag color="orange" style={{ fontSize: 10, margin: 0, lineHeight: '16px' }}>默认</Tag>}
+                                  {isCurrent && <Tag color="green" style={{ fontSize: 10, margin: 0, lineHeight: '16px' }}>当前</Tag>}
+                                  </Space>
+                                }
+                                description={
+                                  <Space direction="vertical" size={0} style={{ width: '100%' }}>
+                                    <Text type="secondary" style={{ fontSize: 11 }}>
+                                      {vt.voiceCode} · 语速 {vt.speechRate}
+                                    </Text>
+                                    <Text type="secondary" style={{ fontSize: 11, color: 'rgba(0,0,0,0.35)' }}>
+                                      试听文本：{vt.customTestText || '你好，这是一段音色试听。'}
+                                    </Text>
+                                    {voicePreviewing && previewText && selectedVoice?.id === vt.id && (
+                                      <Text type="warning" style={{ fontSize: 11 }}>
+                                        正在播报：{previewText}
+                                      </Text>
+                                    )}
+                                  </Space>
+                                }
+                              />
+                            </List.Item>
+                          );
+                        }}
+                      />
+                    </div>
+                  ) : (
+                    <Empty
+                      image={Empty.PRESENTED_IMAGE_SIMPLE}
+                      description={voiceLoading ? '正在获取音色列表…' : status === 'connected' ? '没有可选音色' : '连接设备后将自动获取音色列表'}
+                    />
                   )}
                 </Card>
               </Col>
