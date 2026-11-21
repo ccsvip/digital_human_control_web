@@ -3,9 +3,13 @@ import type { FormEvent } from 'react';
 import {
   Alert,
   App as AntApp,
+  Avatar,
+  Badge,
   Button,
   Card,
   Col,
+  Collapse,
+  Descriptions,
   Divider,
   Empty,
   Form,
@@ -18,7 +22,9 @@ import {
   Segmented,
   Space,
   Statistic,
+  Steps,
   Tag,
+  Timeline,
   Tooltip,
   Typography,
   message,
@@ -303,6 +309,42 @@ function App() {
   const flowName = snapshot ? (snapshot.command?.name ?? '无任务流程') : '等待设备状态';
   const battery = snapshot?.deviceInfo.robotBatteryPercent;
 
+  const manualPointForm = (
+    <form onSubmit={submitDirectNavigation}>
+      <Row gutter={8} style={{ marginBottom: 8 }}>
+        <Col span={10}>
+          <Form.Item label="点位值" style={{ marginBottom: 0 }}>
+            <Input
+              size="small"
+              value={point}
+              onChange={(e) => setPoint(e.target.value)}
+              placeholder="例如 cdz"
+              autoComplete="off"
+            />
+          </Form.Item>
+        </Col>
+        <Col span={14}>
+          <Form.Item label="点位名称" style={{ marginBottom: 0 }}>
+            <Input
+              size="small"
+              value={pointName}
+              onChange={(e) => setPointName(e.target.value)}
+              placeholder="例如 会议室"
+            />
+          </Form.Item>
+        </Col>
+      </Row>
+      <Button
+        block
+        icon={<EnvironmentOutlined />}
+        htmlType="submit"
+        disabled={!canControl || !point.trim() || !pointName.trim()}
+      >
+        导航到此点位
+      </Button>
+    </form>
+  );
+
   return (
     <AntApp>
       {contextHolder}
@@ -324,13 +366,12 @@ function App() {
               {/* 品牌区域 */}
               <div>
                 <Space align="center" size={12}>
-                  <div style={{
-                    width: 40, height: 40, borderRadius: 10,
-                    background: 'linear-gradient(135deg, #1677ff, #0958d9)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  }}>
-                    <RobotOutlined style={{ color: '#fff', fontSize: 20 }} />
-                  </div>
+                  <Avatar
+                    size={40}
+                    shape="square"
+                    icon={<RobotOutlined />}
+                    style={{ background: 'linear-gradient(135deg, #1677ff, #0958d9)', borderRadius: 10 }}
+                  />
                   <div>
                     <Title level={5} style={{ margin: 0 }}>数字人控制台</Title>
                     <Text type="secondary" style={{ fontSize: 11 }}>DIGITAL HUMAN / OPS</Text>
@@ -445,20 +486,29 @@ function App() {
 
               {/* 状态摘要 */}
               <Card size="small">
-                <Space direction="vertical" style={{ width: '100%' }} size="middle">
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <Text type="secondary">服务通道</Text>
-                    <Tag color={CONNECTION_COLORS[status]}>{CONNECTION_LABELS[status]}</Tag>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <Text type="secondary">设备状态</Text>
-                    <Text strong>{deviceStatus}</Text>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <Text type="secondary">最近快照</Text>
-                    <Text strong>{formatTime(lastReceivedAt)}</Text>
-                  </div>
-                </Space>
+                <Descriptions
+                  column={1}
+                  size="small"
+                  colon={false}
+                  labelStyle={{ color: 'rgba(0,0,0,0.45)' }}
+                  items={[
+                    {
+                      key: 'channel',
+                      label: '服务通道',
+                      children: <Tag color={CONNECTION_COLORS[status]}>{CONNECTION_LABELS[status]}</Tag>,
+                    },
+                    {
+                      key: 'device',
+                      label: '设备状态',
+                      children: <Text strong>{deviceStatus}</Text>,
+                    },
+                    {
+                      key: 'snapshot',
+                      label: '最近快照',
+                      children: <Text strong>{formatTime(lastReceivedAt)}</Text>,
+                    },
+                  ]}
+                />
               </Card>
 
               <div>
@@ -524,20 +574,18 @@ function App() {
               <Row gutter={24} align="middle">
                 <Col flex="auto">
                   <Space size="large" align="center">
-                    <div style={{
-                      width: 56, height: 56, borderRadius: 14,
-                      background: 'rgba(255,255,255,0.15)',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    }}>
-                      <RobotOutlined style={{ color: '#fff', fontSize: 28 }} />
-                    </div>
+                    <Avatar
+                      size={56}
+                      shape="square"
+                      icon={<RobotOutlined />}
+                      style={{ background: 'rgba(255,255,255,0.15)', borderRadius: 14, fontSize: 28 }}
+                    />
                     <div>
                       <Space size={8}>
-                        <div style={{
-                          width: 8, height: 8, borderRadius: '50%',
-                          background: screenOnline === true ? '#52c41a' : '#8c8c8c',
-                        }} />
-                        <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12 }}>设备 {deviceStatus}</Text>
+                        <Badge
+                          status={screenOnline === true ? 'success' : screenOnline === false ? 'error' : 'default'}
+                          text={<Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12 }}>设备 {deviceStatus}</Text>}
+                        />
                       </Space>
                       <Title level={4} style={{ color: '#fff', margin: '4px 0' }}>
                         {snapshot?.deviceInfo.deviceName || '尚未获取设备信息'}
@@ -598,18 +646,16 @@ function App() {
                     <div>
                       <Row gutter={16} align="middle">
                         <Col flex="120px">
-                          <div style={{ textAlign: 'center' }}>
-                            <Text type="secondary" style={{ fontSize: 11 }}>主任务</Text>
-                            <div style={{ fontSize: 36, fontWeight: 500, color: '#1677ff', lineHeight: 1.2 }}>
-                              {String(snapshot.taskState.taskIndex + 1).padStart(2, '0')}
-                              <span style={{ fontSize: 14, color: '#8c8c8c' }}> / {String(snapshot.command?.tasks.length ?? 0).padStart(2, '0')}</span>
-                            </div>
-                          </div>
+                          <Statistic
+                            title="主任务"
+                            value={`${String(snapshot.taskState.taskIndex + 1).padStart(2, '0')} / ${String(snapshot.command?.tasks.length ?? 0).padStart(2, '0')}`}
+                            valueStyle={{ color: '#1677ff', fontSize: 28, fontWeight: 500 }}
+                          />
                         </Col>
                         <Col flex="auto">
-                          <Space direction="vertical" size={4}>
+                          <Space direction="vertical" size={4} style={{ width: '100%' }}>
                             <Tag>{taskTypeLabel(task)}</Tag>
-                            <Title level={5} style={{ margin: 0 }} ellipsis={{ tooltip: taskDisplayName(task) }}>
+                            <Title level={5} style={{ margin: 0, flex: 1, minWidth: 0 }}>
                               {taskDisplayName(task)}
                             </Title>
                             <Text type="secondary" style={{ fontSize: 12 }}>{statusLabel(snapshot.taskState.status)}</Text>
@@ -624,8 +670,8 @@ function App() {
                               <Text type="secondary" style={{ fontSize: 11 }}>
                                 子任务 {snapshot.taskState.innerTaskIndex + 1} · {taskTypeLabel(innerTask)}
                               </Text>
-                              <div>
-                                <Text strong style={{ fontSize: 13 }} ellipsis={{ tooltip: taskDisplayName(innerTask) }}>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <Text strong style={{ fontSize: 13 }}>
                                   {taskDisplayName(innerTask)}
                                 </Text>
                               </div>
@@ -677,53 +723,38 @@ function App() {
                 >
                   {routePoints.length ? (
                     <div>
-                      <Row gutter={[12, 12]} style={{ marginBottom: 16 }}>
-                        {routePoints.map((rp, idx) => (
-                          <Col key={rp.key} flex="1 1 120px">
+                      <Steps
+                        direction="horizontal"
+                        size="small"
+                        current={routePoints.findIndex((p) => p.progress === 'active')}
+                        items={routePoints.map((rp, idx) => ({
+                          title: (
                             <Tooltip title={rp.canNavigate ? `跳转到 ${rp.name}` : rp.name}>
-                              <div
-                                style={{
-                                  textAlign: 'center',
-                                  cursor: rp.canNavigate ? 'pointer' : 'default',
-                                  opacity: rp.canNavigate ? 1 : 0.6,
-                                  transition: 'transform 0.15s',
-                                }}
+                              <span
+                                style={{ cursor: rp.canNavigate ? 'pointer' : 'default', opacity: rp.canNavigate ? 1 : 0.6 }}
                                 onClick={() => rp.canNavigate && requestJump(rp)}
                               >
-                                <div
-                                  style={{
-                                    width: 44, height: 44, borderRadius: '50%',
-                                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                                    background: routeProgressColor(rp.progress),
-                                    color: rp.progress === 'pending' ? '#8c8c8c' : '#fff',
-                                    fontSize: 14, fontWeight: 600,
-                                    border: rp.progress === 'active' ? '4px solid #d6e4ff' : '1px solid #d9d9d9',
-                                    marginBottom: 8,
-                                  }}
-                                >
-                                  {rp.progress === 'completed' ? <CheckOutlined /> : idx + 1}
-                                </div>
-                                <div style={{ fontSize: 12, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                  {rp.name}
-                                </div>
-                                <div style={{ fontSize: 10, color: '#8c8c8c' }}>{routeProgressText(rp.progress)}</div>
-                              </div>
+                                {rp.name}
+                              </span>
                             </Tooltip>
-                          </Col>
-                        ))}
-                      </Row>
+                          ),
+                          description: routeProgressText(rp.progress),
+                          status: rp.progress === 'completed' ? 'finish' : rp.progress === 'active' ? 'process' : 'wait',
+                          icon: rp.progress === 'completed' ? <CheckOutlined /> : idx + 1,
+                        }))}
+                      />
                       <Divider style={{ margin: '8px 0' }} />
                       <Space size="large">
                         <Space>
-                          <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#52c41a' }} />
+                          <Badge color="#52c41a" />
                           <Text type="secondary" style={{ fontSize: 12 }}>前序</Text>
                         </Space>
                         <Space>
-                          <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#1677ff' }} />
+                          <Badge color="#1677ff" />
                           <Text type="secondary" style={{ fontSize: 12 }}>当前</Text>
                         </Space>
                         <Space>
-                          <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#d9d9d9' }} />
+                          <Badge color="#d9d9d9" />
                           <Text type="secondary" style={{ fontSize: 12 }}>待执行</Text>
                         </Space>
                         <Text type="secondary" style={{ fontSize: 11, marginLeft: 'auto' }}>
@@ -1020,15 +1051,17 @@ function App() {
                           >
                             <List.Item.Meta
                               avatar={
-                                <div style={{
-                                  width: 28, height: 28, borderRadius: '50%',
-                                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                  background: pt.isChargingPile ? '#52c41a' : pt.isUiVisible ? '#1677ff' : '#f0f0f0',
-                                  color: pt.isChargingPile || pt.isUiVisible ? '#fff' : '#8c8c8c',
-                                  fontSize: 11, fontWeight: 600,
-                                }}>
-                                  {pt.isChargingPile ? <BatteryChargingIcon style={{ fontSize: 13 }} /> : <EnvironmentOutlined style={{ fontSize: 13 }} />}
-                                </div>
+                                <Avatar
+                                  size={28}
+                                  shape="circle"
+                                  icon={pt.isChargingPile ? <BatteryChargingIcon /> : <EnvironmentOutlined />}
+                                  style={{
+                                    background: pt.isChargingPile ? '#52c41a' : pt.isUiVisible ? '#1677ff' : '#f0f0f0',
+                                    color: pt.isChargingPile || pt.isUiVisible ? '#fff' : '#8c8c8c',
+                                    fontSize: 11,
+                                    fontWeight: 600,
+                                  }}
+                                />
                               }
                               title={
                                 <Space size={4}>
@@ -1048,42 +1081,17 @@ function App() {
                         )}
                       />
                       <Divider style={{ margin: '8px 0' }} />
-                      <details>
-                        <summary style={{ cursor: 'pointer', fontSize: 12, color: '#8c8c8c' }}>
-                          手动输入点位
-                        </summary>
-                        <form onSubmit={submitDirectNavigation} style={{ marginTop: 8 }}>
-                          <Row gutter={8} style={{ marginBottom: 8 }}>
-                            <Col span={10}>
-                              <Text type="secondary" style={{ fontSize: 11 }}>点位值</Text>
-                              <Input
-                                size="small"
-                                value={point}
-                                onChange={(e) => setPoint(e.target.value)}
-                                placeholder="例如 cdz"
-                                autoComplete="off"
-                              />
-                            </Col>
-                            <Col span={14}>
-                              <Text type="secondary" style={{ fontSize: 11 }}>点位名称</Text>
-                              <Input
-                                size="small"
-                                value={pointName}
-                                onChange={(e) => setPointName(e.target.value)}
-                                placeholder="例如 会议室"
-                              />
-                            </Col>
-                          </Row>
-                          <Button
-                            block
-                            icon={<EnvironmentOutlined />}
-                            htmlType="submit"
-                            disabled={!canControl || !point.trim() || !pointName.trim()}
-                          >
-                            导航到此点位
-                          </Button>
-                        </form>
-                      </details>
+                      <Collapse
+                        size="small"
+                        ghost
+                        items={[
+                          {
+                            key: 'manual',
+                            label: '手动输入点位',
+                            children: manualPointForm,
+                          },
+                        ]}
+                      />
                     </div>
                   ) : (
                     <div>
@@ -1100,42 +1108,17 @@ function App() {
                         }
                         style={{ marginBottom: 12, fontSize: 12 }}
                       />
-                      <details>
-                        <summary style={{ cursor: 'pointer', fontSize: 12, color: '#8c8c8c' }}>
-                          手动输入点位
-                        </summary>
-                        <form onSubmit={submitDirectNavigation} style={{ marginTop: 8 }}>
-                          <Row gutter={8} style={{ marginBottom: 8 }}>
-                            <Col span={10}>
-                              <Text type="secondary" style={{ fontSize: 11 }}>点位值</Text>
-                              <Input
-                                size="small"
-                                value={point}
-                                onChange={(e) => setPoint(e.target.value)}
-                                placeholder="例如 cdz"
-                                autoComplete="off"
-                              />
-                            </Col>
-                            <Col span={14}>
-                              <Text type="secondary" style={{ fontSize: 11 }}>点位名称</Text>
-                              <Input
-                                size="small"
-                                value={pointName}
-                                onChange={(e) => setPointName(e.target.value)}
-                                placeholder="例如 会议室"
-                              />
-                            </Col>
-                          </Row>
-                          <Button
-                            block
-                            icon={<EnvironmentOutlined />}
-                            htmlType="submit"
-                            disabled={!canControl || !point.trim() || !pointName.trim()}
-                          >
-                            导航到此点位
-                          </Button>
-                        </form>
-                      </details>
+                      <Collapse
+                        size="small"
+                        ghost
+                        items={[
+                          {
+                            key: 'manual',
+                            label: '手动输入点位',
+                            children: manualPointForm,
+                          },
+                        ]}
+                      />
                     </div>
                   )}
                 </Card>
@@ -1170,75 +1153,56 @@ function App() {
               style={{ marginTop: 16 }}
             >
               {filteredLogs.length ? (
-                <div style={{ maxHeight: 400, overflowY: 'auto' }}>
-                  {filteredLogs.map((entry) => {
+                <Timeline
+                  style={{ maxHeight: 400, overflowY: 'auto', paddingLeft: 8 }}
+                  items={filteredLogs.map((entry) => {
                     const expanded = expandedLog === entry.id;
-                    return (
-                      <div key={entry.id} style={{ borderBottom: '1px solid #f0f0f0' }}>
+                    return {
+                      key: entry.id,
+                      dot: <Tag color={LOG_DIR_COLORS[entry.direction]} style={{ margin: 0 }}>{LOG_DIR_LABELS[entry.direction]}</Tag>,
+                      children: (
                         <div
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 8,
-                            padding: '8px 0',
-                            cursor: 'pointer',
-                          }}
+                          style={{ cursor: 'pointer' }}
                           onClick={() => setExpandedLog(expanded ? null : entry.id)}
                         >
-                          <Tag
-                            color={LOG_DIR_COLORS[entry.direction]}
-                            style={{ margin: 0, minWidth: 40, textAlign: 'center', flexShrink: 0 }}
-                          >
-                            {LOG_DIR_LABELS[entry.direction]}
-                          </Tag>
-                          <Text
-                            code
-                            style={{ fontSize: 11, flexShrink: 0, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                          >
-                            {entry.type}
-                          </Text>
-                          <div
-                            style={{
-                              flex: 1,
-                              minWidth: 0,
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                              whiteSpace: 'nowrap',
-                              fontSize: 11,
-                              fontFamily: 'monospace',
-                              color: 'rgba(0, 0, 0, 0.45)',
-                            }}
-                            title={entry.raw}
+                          <Space size={8} align="center" style={{ width: '100%' }}>
+                            <Text code style={{ fontSize: 11, flexShrink: 0, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {entry.type}
+                            </Text>
+                            <Text
+                              type="secondary"
+                              style={{ fontSize: 11, fontFamily: 'monospace', flexShrink: 0, marginLeft: 'auto' }}
+                            >
+                              {formatTime(entry.timestamp)}
+                            </Text>
+                          </Space>
+                          <Paragraph
+                            ellipsis={{ tooltip: entry.raw, rows: 1 }}
+                            style={{ margin: '4px 0 0', fontSize: 11, fontFamily: 'monospace', color: 'rgba(0,0,0,0.45)' }}
                           >
                             {entry.raw}
-                          </div>
-                          <Text
-                            type="secondary"
-                            style={{ fontSize: 11, fontFamily: 'monospace', flexShrink: 0 }}
-                          >
-                            {formatTime(entry.timestamp)}
-                          </Text>
+                          </Paragraph>
+                          {expanded && (
+                            <pre style={{
+                              margin: '8px 0 0',
+                              padding: 12,
+                              background: '#1a1a2e',
+                              color: '#a9dc76',
+                              borderRadius: 6,
+                              fontSize: 11,
+                              lineHeight: 1.6,
+                              overflow: 'auto',
+                              maxHeight: 300,
+                              fontFamily: 'monospace',
+                            }}>
+                              {prettyRaw(entry.raw)}
+                            </pre>
+                          )}
                         </div>
-                        {expanded && (
-                          <pre style={{
-                            margin: '0 0 8px',
-                            padding: 12,
-                            background: '#1a1a2e',
-                            color: '#a9dc76',
-                            borderRadius: 6,
-                            fontSize: 11,
-                            lineHeight: 1.6,
-                            overflow: 'auto',
-                            maxHeight: 300,
-                            fontFamily: 'monospace',
-                          }}>
-                            {prettyRaw(entry.raw)}
-                          </pre>
-                        )}
-                      </div>
-                    );
+                      ),
+                    };
                   })}
-                </div>
+                />
               ) : (
                 <Empty
                   image={Empty.PRESENTED_IMAGE_SIMPLE}
@@ -1287,15 +1251,17 @@ function App() {
             >
               <List.Item.Meta
                 avatar={
-                  <div style={{
-                    width: 32, height: 32, borderRadius: '50%',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    background: routeProgressColor(rp.progress),
-                    color: rp.progress === 'pending' ? '#8c8c8c' : '#fff',
-                    fontSize: 12, fontWeight: 600,
-                  }}>
-                    {rp.progress === 'completed' ? <CheckOutlined /> : index + 1}
-                  </div>
+                  <Avatar
+                    size={32}
+                    shape="circle"
+                    icon={rp.progress === 'completed' ? <CheckOutlined /> : index + 1}
+                    style={{
+                      background: routeProgressColor(rp.progress),
+                      color: rp.progress === 'pending' ? '#8c8c8c' : '#fff',
+                      fontSize: 12,
+                      fontWeight: 600,
+                    }}
+                  />
                 }
                 title={rp.name}
                 description={
@@ -1408,15 +1374,18 @@ function App() {
                   >
                     <List.Item.Meta
                       avatar={
-                        <div style={{
-                          width: 32, height: 32, borderRadius: '50%',
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          background: isCurrent ? '#1677ff' : isNavigation ? '#f0f0f0' : '#fafafa',
-                          color: isCurrent ? '#fff' : '#8c8c8c',
-                          fontSize: 12, fontWeight: 600,
-                        }}>
+                        <Avatar
+                          size={32}
+                          shape="circle"
+                          style={{
+                            background: isCurrent ? '#1677ff' : isNavigation ? '#f0f0f0' : '#fafafa',
+                            color: isCurrent ? '#fff' : '#8c8c8c',
+                            fontSize: 12,
+                            fontWeight: 600,
+                          }}
+                        >
                           {index + 1}
-                        </div>
+                        </Avatar>
                       }
                       title={
                         <Space size={6}>
