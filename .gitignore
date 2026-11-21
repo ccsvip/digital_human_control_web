@@ -39,3 +39,9 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+
+# AI agent configs
+.agents/
+.claude/
+.serena/
+agent/
