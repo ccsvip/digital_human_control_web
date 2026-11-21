@@ -383,3 +383,176 @@ export function buildRoutePoints(snapshot: FlowSnapshot | null, canControl: bool
     ];
   });
 }
+
+/**
+ * 直达导航点位：从当前任务树中提取所有导航节点（不限 is_show）的点位信息。
+ * 与轨迹预览不同，直达导航不要求 is_show 或 step_id 有效，只要 content.command 和 content.pointName 均非空即可。
+ */
+export interface DirectPoint {
+  key: string;
+  point: string;
+  pointName: string;
+  rootIndex: number;
+  /** 是否为当前正在执行的主任务 */
+  isActive: boolean;
+}
+
+export function buildDirectPoints(snapshot: FlowSnapshot | null): DirectPoint[] {
+  if (!snapshot?.command) return [];
+  const currentIndex = snapshot.taskState.taskIndex;
+  const seen = new Set<string>();
+  return snapshot.command.tasks.flatMap((task, rootIndex) => {
+    if (task.type !== 'navigation') return [];
+    const point = typeof task.content.command === 'string' ? task.content.command.trim() : '';
+    const pointName = typeof task.content.pointName === 'string' ? task.content.pointName.trim() : '';
+    if (!point || !pointName) return [];
+    const key = `${point}:${pointName}`;
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [
+      {
+        key,
+        point,
+        pointName,
+        rootIndex,
+        isActive: rootIndex === currentIndex,
+      },
+    ];
+  });
+}
+
+// ===================== 点位分组与任务模式读取协议 =====================
+
+/** 点位信息 */
+export interface PointItem {
+  id: number;
+  groupId: number;
+  groupName: string;
+  name: string;
+  command: string;
+  isActive: boolean;
+  isShow: boolean;
+  isChargingPile: boolean;
+  isUiVisible: boolean;
+  sortOrder: number;
+}
+
+/** 点位分组 */
+export interface PointGroup {
+  id: number;
+  name: string;
+  pointCount: number;
+  points: PointItem[];
+}
+
+/** 任务模式分类 */
+export interface TaskModes {
+  guide: string[];
+  explain: string[];
+  unassigned: string[];
+}
+
+/** 点位分组请求 */
+export interface PointGroupRequest {
+  type: 'device.point_group.get';
+  id: string;
+  payload: { deviceCode: string };
+}
+
+/** 任务模式请求 */
+export interface TaskModeRequest {
+  type: 'device.task_mode.get';
+  id: string;
+  payload: { deviceCode: string };
+}
+
+/** 错误响应 */
+export interface ErrorResponse {
+  type: 'error';
+  id: string | null;
+  error: { code: string; message: string };
+}
+
+export function createPointGroupRequest(deviceCode: string, id?: string): PointGroupRequest {
+  const code = deviceCode.trim();
+  if (!code) throw new Error('设备号不能为空');
+  return {
+    type: 'device.point_group.get',
+    id: id ?? `web-pg-${Date.now().toString(36)}`,
+    payload: { deviceCode: code },
+  };
+}
+
+export function createTaskModeRequest(deviceCode: string, id?: string): TaskModeRequest {
+  const code = deviceCode.trim();
+  if (!code) throw new Error('设备号不能为空');
+  const reqId = id?.trim();
+  if (!reqId) throw new Error('任务模式请求 id 不能为空');
+  return {
+    type: 'device.task_mode.get',
+    id: reqId,
+    payload: { deviceCode: code },
+  };
+}
+
+function parsePointItem(value: unknown, path: string): PointItem {
+  const obj = requiredRecord(value, path);
+  return {
+    id: typeof obj.id === 'number' ? obj.id : 0,
+    groupId: typeof obj.groupId === 'number' ? obj.groupId : 0,
+    groupName: typeof obj.groupName === 'string' ? obj.groupName : '',
+    name: typeof obj.name === 'string' ? obj.name : '',
+    command: typeof obj.command === 'string' ? obj.command : '',
+    isActive: requiredBoolean(obj.isActive, `${path}.isActive`),
+    isShow: requiredBoolean(obj.isShow, `${path}.isShow`),
+    isChargingPile: requiredBoolean(obj.isChargingPile, `${path}.isChargingPile`),
+    isUiVisible: requiredBoolean(obj.isUiVisible, `${path}.isUiVisible`),
+    sortOrder: typeof obj.sortOrder === 'number' ? obj.sortOrder : 0,
+  };
+}
+
+export function parsePointGroup(message: unknown): { deviceCode: string; pointGroup: PointGroup | null } {
+  const root = requiredRecord(message, '点位分组消息');
+  if (root.type !== 'device.point_group') throw new Error('消息类型不是点位分组');
+  const payload = requiredRecord(root.payload, 'payload');
+  const deviceCode = typeof payload.deviceCode === 'string' ? payload.deviceCode : '';
+  if (payload.pointGroup === null) return { deviceCode, pointGroup: null };
+  const raw = requiredRecord(payload.pointGroup, 'pointGroup');
+  if (!Array.isArray(raw.points)) throw new Error('pointGroup.points 必须是数组');
+  const points = raw.points.map((p, i) => parsePointItem(p, `pointGroup.points[${i}]`));
+  return {
+    deviceCode,
+    pointGroup: {
+      id: typeof raw.id === 'number' ? raw.id : 0,
+      name: typeof raw.name === 'string' ? raw.name : '',
+      pointCount: typeof raw.pointCount === 'number' ? raw.pointCount : points.length,
+      points,
+    },
+  };
+}
+
+export function parseTaskModes(message: unknown): { deviceCode: string; modes: TaskModes } {
+  const root = requiredRecord(message, '任务模式消息');
+  if (root.type !== 'device.task_mode') throw new Error('消息类型不是任务模式');
+  const payload = requiredRecord(root.payload, 'payload');
+  const deviceCode = typeof payload.deviceCode === 'string' ? payload.deviceCode : '';
+  const rawModes = requiredRecord(payload.modes, 'modes');
+  const extract = (key: string): string[] => {
+    const arr = rawModes[key];
+    if (!Array.isArray(arr)) return [];
+    return arr.filter((v): v is string => typeof v === 'string');
+  };
+  return {
+    deviceCode,
+    modes: {
+      guide: extract('guide'),
+      explain: extract('explain'),
+      unassigned: extract('unassigned'),
+    },
+  };
+}
+
+export function isErrorResponse(message: unknown): message is ErrorResponse {
+  if (!isRecord(message)) return false;
+  return message.type === 'error' && isRecord(message.error);
+}

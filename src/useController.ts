@@ -4,7 +4,12 @@ import {
   buildRoutePoints,
   buildWebSocketUrl,
   createDeviceAction,
+  createPointGroupRequest,
+  createTaskModeRequest,
+  isErrorResponse,
   parseFlowSnapshot,
+  parsePointGroup,
+  parseTaskModes,
 } from './protocol';
 import type {
   ActionName,
@@ -13,6 +18,8 @@ import type {
   ConnectionConfig,
   DeviceAction,
   FlowSnapshot,
+  PointGroup,
+  TaskModes,
 } from './protocol';
 
 export const DEFAULT_CONFIG: ConnectionConfig = {
@@ -66,6 +73,10 @@ export function useController() {
   const [isQuerying, setIsQuerying] = useState(false);
   const [lastReceivedAt, setLastReceivedAt] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [pointGroup, setPointGroup] = useState<PointGroup | null>(null);
+  const [taskModes, setTaskModes] = useState<TaskModes | null>(null);
+  const [pointGroupLoading, setPointGroupLoading] = useState(false);
+  const [taskModesLoading, setTaskModesLoading] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const configRef = useRef(config);
@@ -76,6 +87,8 @@ export function useController() {
   const queryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const connectRef = useRef<(isReconnect?: boolean) => void>(() => undefined);
   const logCounterRef = useRef(0);
+  const pointGroupReqIdRef = useRef<string | null>(null);
+  const taskModesReqIdRef = useRef<string | null>(null);
 
   configRef.current = config;
   snapshotRef.current = snapshot;
@@ -104,6 +117,12 @@ export function useController() {
     setSnapshot(null);
     setScreenOnline(null);
     setLastReceivedAt(null);
+    setPointGroup(null);
+    setTaskModes(null);
+    setPointGroupLoading(false);
+    setTaskModesLoading(false);
+    pointGroupReqIdRef.current = null;
+    taskModesReqIdRef.current = null;
   }, [clearQueryTimer]);
 
   const sendAction = useCallback(
@@ -153,6 +172,42 @@ export function useController() {
     },
     [appendLog],
   );
+
+  const fetchPoints = useCallback(() => {
+    const socket = wsRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    const currentConfig = configRef.current;
+    if (!currentConfig.deviceCode.trim()) return;
+    try {
+      const req = createPointGroupRequest(currentConfig.deviceCode);
+      pointGroupReqIdRef.current = req.id;
+      setPointGroupLoading(true);
+      const raw = JSON.stringify(req);
+      socket.send(raw);
+      appendLog('outgoing', 'device.point_group.get', raw);
+    } catch (reason) {
+      setPointGroupLoading(false);
+      appendLog('system', 'point_group_send_error', reason instanceof Error ? reason.message : '点位分组请求发送失败');
+    }
+  }, [appendLog]);
+
+  const fetchTaskModes = useCallback(() => {
+    const socket = wsRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    const currentConfig = configRef.current;
+    if (!currentConfig.deviceCode.trim()) return;
+    try {
+      const req = createTaskModeRequest(currentConfig.deviceCode, `web-tm-${Date.now().toString(36)}`);
+      taskModesReqIdRef.current = req.id;
+      setTaskModesLoading(true);
+      const raw = JSON.stringify(req);
+      socket.send(raw);
+      appendLog('outgoing', 'device.task_mode.get', raw);
+    } catch (reason) {
+      setTaskModesLoading(false);
+      appendLog('system', 'task_mode_send_error', reason instanceof Error ? reason.message : '任务模式请求发送失败');
+    }
+  }, [appendLog]);
 
   const requestState = useCallback(() => {
     const socket = wsRef.current;
@@ -234,6 +289,8 @@ export function useController() {
         setError(null);
         appendLog('system', 'connected', `已连接 ${url}`);
         requestState();
+        fetchPoints();
+        fetchTaskModes();
       };
 
       socket.onmessage = (event) => {
@@ -274,6 +331,48 @@ export function useController() {
           return;
         }
 
+        if (type === 'device.point_group') {
+          try {
+            const result = parsePointGroup(message);
+            if (result.pointGroup) {
+              setPointGroup(result.pointGroup);
+            } else {
+              setPointGroup(null);
+            }
+          } catch (reason) {
+            appendLog('system', 'point_group_parse_error', reason instanceof Error ? reason.message : '点位分组解析失败');
+          }
+          setPointGroupLoading(false);
+          pointGroupReqIdRef.current = null;
+          return;
+        }
+
+        if (type === 'device.task_mode') {
+          try {
+            const result = parseTaskModes(message);
+            setTaskModes(result.modes);
+          } catch (reason) {
+            appendLog('system', 'task_mode_parse_error', reason instanceof Error ? reason.message : '任务模式解析失败');
+          }
+          setTaskModesLoading(false);
+          taskModesReqIdRef.current = null;
+          return;
+        }
+
+        if (isErrorResponse(message)) {
+          const err = message as { type: 'error'; id: string | null; error: { code: string; message: string } };
+          if (err.id === pointGroupReqIdRef.current) {
+            setPointGroupLoading(false);
+            pointGroupReqIdRef.current = null;
+            appendLog('system', 'point_group_error', `点位分组请求失败: ${err.error.message} (code: ${err.error.code})`);
+          } else if (err.id === taskModesReqIdRef.current) {
+            setTaskModesLoading(false);
+            taskModesReqIdRef.current = null;
+            appendLog('system', 'task_mode_error', `任务模式请求失败: ${err.error.message} (code: ${err.error.code})`);
+          }
+          return;
+        }
+
         if (type === 'screen_offline') {
           clearQueryTimer();
           setIsQuerying(false);
@@ -306,7 +405,7 @@ export function useController() {
         }
       };
     },
-    [appendLog, clearRealtime, clearQueryTimer, requestState],
+    [appendLog, clearRealtime, clearQueryTimer, fetchPoints, fetchTaskModes, requestState],
   );
   connectRef.current = connect;
 
@@ -363,10 +462,16 @@ export function useController() {
     isQuerying,
     lastReceivedAt,
     logs,
+    pointGroup,
+    taskModes,
+    pointGroupLoading,
+    taskModesLoading,
     connect,
     disconnect,
     requestState,
     sendAction,
+    fetchPoints,
+    fetchTaskModes,
     clearError: () => setError(null),
     clearLogs: () => setLogs([]),
   };

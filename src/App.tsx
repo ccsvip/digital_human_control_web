@@ -51,7 +51,7 @@ import {
   ThunderboltOutlined,
   WarningOutlined,
 } from '@ant-design/icons';
-import type { ActionName, ButtonKey, RoutePoint } from './protocol';
+import type { ActionName, ButtonKey, PointItem, RoutePoint } from './protocol';
 import type { ActionParams, ConnectionConfig } from './protocol';
 import {
   buildRoutePoints,
@@ -193,6 +193,10 @@ function App() {
     configDirty,
     isQuerying,
     lastReceivedAt,
+    pointGroup,
+    taskModes,
+    pointGroupLoading,
+    taskModesLoading,
   } = controller;
 
   const [question, setQuestion] = useState('');
@@ -200,6 +204,7 @@ function App() {
   const [pointName, setPointName] = useState('');
   const [showDeviceCode, setShowDeviceCode] = useState(false);
   const [pointsModalOpen, setPointsModalOpen] = useState(false);
+  const [flowModalOpen, setFlowModalOpen] = useState(false);
   const [logFilter, setLogFilter] = useState<'all' | LogDirection>('all');
   const [expandedLog, setExpandedLog] = useState<string | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
@@ -271,12 +276,17 @@ function App() {
   const submitDirectNavigation = (e: FormEvent) => {
     e.preventDefault();
     if (!point.trim() || !pointName.trim() || !canControl) return;
+    navigateDirect(point.trim(), pointName.trim());
+  };
+
+  const navigateDirect = (targetPoint: string, targetPointName: string) => {
+    if (!targetPoint || !targetPointName || !canControl) return;
     Modal.confirm({
-      title: `导航到"${pointName.trim()}"？`,
-      content: `将使用点位值 ${point.trim()} 发起独立导航，不改变当前任务树中的步骤索引。`,
+      title: `导航到"${targetPointName}"？`,
+      content: `将使用点位值 ${targetPoint} 发起独立导航，不改变当前任务树中的步骤索引。`,
       okText: '开始导航',
       cancelText: '取消',
-      onOk: () => execute('navigateToPoint', { point, pointName }),
+      onOk: () => execute('navigateToPoint', { point: targetPoint, pointName: targetPointName }),
     });
   };
 
@@ -637,7 +647,22 @@ function App() {
 
                 {/* 轨迹预览 */}
                 <Card
-                  title={<Space><EnvironmentOutlined /> {flowName}</Space>}
+                  title={
+                    <Space
+                      style={{ cursor: snapshot?.command ? 'pointer' : 'default', color: snapshot?.command ? '#1677ff' : undefined }}
+                      onClick={() => snapshot?.command && setFlowModalOpen(true)}
+                    >
+                      <EnvironmentOutlined />
+                      <Tooltip title={snapshot?.command ? '点击查看完整任务流程' : ''}>
+                        <span>{flowName}</span>
+                      </Tooltip>
+                      {snapshot?.command && (
+                        <Tag style={{ fontSize: 10, margin: 0, lineHeight: '16px' }}>
+                          {snapshot.command.tasks.length} 步
+                        </Tag>
+                      )}
+                    </Space>
+                  }
                   extra={
                     <Space>
                       <Text type="secondary">{routePoints.length} 个导航点</Text>
@@ -710,6 +735,168 @@ function App() {
                     <Empty
                       image={Empty.PRESENTED_IMAGE_SIMPLE}
                       description={snapshot?.command ? '任务树中没有满足显示条件的根导航任务。' : '轨迹仅展示流程中的可见根导航任务，不代表机器人实际运动路径。'}
+                    />
+                  )}
+                </Card>
+
+                {/* 任务流程列表 */}
+                <Card
+                  title={<Space><NodeIndexOutlined /> 任务流程</Space>}
+                  extra={
+                    <Space size={4}>
+                      {taskModes && (
+                        <Text type="secondary" style={{ fontSize: 11 }}>
+                          {taskModes.guide.length + taskModes.explain.length + taskModes.unassigned.length} 个
+                        </Text>
+                      )}
+                      <Button
+                        size="small"
+                        type="text"
+                        icon={taskModesLoading ? <LoadingOutlined /> : <ReloadOutlined />}
+                        onClick={controller.fetchTaskModes}
+                        disabled={status !== 'connected'}
+                      />
+                    </Space>
+                  }
+                  style={{ marginBottom: 16 }}
+                >
+                  {taskModes ? (
+                    (taskModes.guide.length > 0 || taskModes.explain.length > 0 || taskModes.unassigned.length > 0) ? (
+                      <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                        {taskModes.explain.length > 0 && (
+                          <div>
+                            <div style={{ marginBottom: 6 }}>
+                              <Space>
+                                <Tag color="blue">讲解</Tag>
+                                <Text type="secondary" style={{ fontSize: 11 }}>{taskModes.explain.length} 个</Text>
+                              </Space>
+                            </div>
+                            <Row gutter={[8, 8]}>
+                              {taskModes.explain.map((name) => {
+                                const isRunning = snapshot?.command?.name === name;
+                                return (
+                                  <Col key={name} flex="1 1 200px">
+                                    <Button
+                                      block
+                                      style={{ textAlign: 'left', height: 36 }}
+                                      disabled={!canControl}
+                                      type={isRunning ? 'primary' : 'default'}
+                                      icon={<NodeIndexOutlined />}
+                                      onClick={() => {
+                                        if (!canControl) return;
+                                        Modal.confirm({
+                                          title: `发起任务流程"${name}"？`,
+                                          content: '将通过文本提问方式向设备发送该任务指令，设备会根据当前状态处理。',
+                                          okText: '确认',
+                                          cancelText: '取消',
+                                          onOk: () => execute('textQuestion', { text: name }),
+                                        });
+                                      }}
+                                    >
+                                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        {name}
+                                      </span>
+                                      {isRunning && <Tag color="blue" style={{ marginLeft: 4, fontSize: 9 }}>运行中</Tag>}
+                                    </Button>
+                                  </Col>
+                                );
+                              })}
+                            </Row>
+                          </div>
+                        )}
+                        {taskModes.guide.length > 0 && (
+                          <div>
+                            <div style={{ marginBottom: 6 }}>
+                              <Space>
+                                <Tag color="green">带路</Tag>
+                                <Text type="secondary" style={{ fontSize: 11 }}>{taskModes.guide.length} 个</Text>
+                              </Space>
+                            </div>
+                            <Row gutter={[8, 8]}>
+                              {taskModes.guide.map((name) => {
+                                const isRunning = snapshot?.command?.name === name;
+                                return (
+                                  <Col key={name} flex="1 1 200px">
+                                    <Button
+                                      block
+                                      style={{ textAlign: 'left', height: 36 }}
+                                      disabled={!canControl}
+                                      type={isRunning ? 'primary' : 'default'}
+                                      icon={<EnvironmentOutlined />}
+                                      onClick={() => {
+                                        if (!canControl) return;
+                                        Modal.confirm({
+                                          title: `发起任务流程"${name}"？`,
+                                          content: '将通过文本提问方式向设备发送该任务指令，设备会根据当前状态处理。',
+                                          okText: '确认',
+                                          cancelText: '取消',
+                                          onOk: () => execute('textQuestion', { text: name }),
+                                        });
+                                      }}
+                                    >
+                                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        {name}
+                                      </span>
+                                      {isRunning && <Tag color="blue" style={{ marginLeft: 4, fontSize: 9 }}>运行中</Tag>}
+                                    </Button>
+                                  </Col>
+                                );
+                              })}
+                            </Row>
+                          </div>
+                        )}
+                        {taskModes.unassigned.length > 0 && (
+                          <div>
+                            <div style={{ marginBottom: 6 }}>
+                              <Space>
+                                <Tag>未分配</Tag>
+                                <Text type="secondary" style={{ fontSize: 11 }}>{taskModes.unassigned.length} 个</Text>
+                              </Space>
+                            </div>
+                            <Row gutter={[8, 8]}>
+                              {taskModes.unassigned.map((name) => {
+                                const isRunning = snapshot?.command?.name === name;
+                                return (
+                                  <Col key={name} flex="1 1 200px">
+                                    <Button
+                                      block
+                                      style={{ textAlign: 'left', height: 36 }}
+                                      disabled={!canControl}
+                                      type={isRunning ? 'primary' : 'default'}
+                                      icon={<ThunderboltOutlined />}
+                                      onClick={() => {
+                                        if (!canControl) return;
+                                        Modal.confirm({
+                                          title: `发起任务流程"${name}"？`,
+                                          content: '将通过文本提问方式向设备发送该任务指令，设备会根据当前状态处理。',
+                                          okText: '确认',
+                                          cancelText: '取消',
+                                          onOk: () => execute('textQuestion', { text: name }),
+                                        });
+                                      }}
+                                    >
+                                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        {name}
+                                      </span>
+                                      {isRunning && <Tag color="blue" style={{ marginLeft: 4, fontSize: 9 }}>运行中</Tag>}
+                                    </Button>
+                                  </Col>
+                                );
+                              })}
+                            </Row>
+                          </div>
+                        )}
+                      </Space>
+                    ) : (
+                      <Empty
+                        image={Empty.PRESENTED_IMAGE_SIMPLE}
+                        description="设备没有可用的任务流程"
+                      />
+                    )
+                  ) : (
+                    <Empty
+                      image={Empty.PRESENTED_IMAGE_SIMPLE}
+                      description={taskModesLoading ? '正在获取任务流程…' : '连接设备后将自动获取任务流程列表'}
                     />
                   )}
                 </Card>
@@ -790,38 +977,167 @@ function App() {
                 <Card
                   size="small"
                   title={<Space><EnvironmentOutlined /> 直达导航</Space>}
+                  extra={
+                    pointGroup ? (
+                      <Space size={4}>
+                        <Text type="secondary" style={{ fontSize: 11 }}>{pointGroup.pointCount} 个点位</Text>
+                        <Button
+                          size="small"
+                          type="text"
+                          icon={pointGroupLoading ? <LoadingOutlined /> : <ReloadOutlined />}
+                          onClick={controller.fetchPoints}
+                          disabled={status !== 'connected'}
+                        />
+                      </Space>
+                    ) : pointGroupLoading ? (
+                      <LoadingOutlined style={{ fontSize: 12 }} />
+                    ) : null
+                  }
                 >
-                  <form onSubmit={submitDirectNavigation}>
-                    <Row gutter={8} style={{ marginBottom: 8 }}>
-                      <Col span={10}>
-                        <Text type="secondary" style={{ fontSize: 11 }}>点位值</Text>
-                        <Input
-                          size="small"
-                          value={point}
-                          onChange={(e) => setPoint(e.target.value)}
-                          placeholder="例如 cdz"
-                          autoComplete="off"
-                        />
-                      </Col>
-                      <Col span={14}>
-                        <Text type="secondary" style={{ fontSize: 11 }}>点位名称</Text>
-                        <Input
-                          size="small"
-                          value={pointName}
-                          onChange={(e) => setPointName(e.target.value)}
-                          placeholder="例如 会议室"
-                        />
-                      </Col>
-                    </Row>
-                    <Button
-                      block
-                      icon={<EnvironmentOutlined />}
-                      htmlType="submit"
-                      disabled={!canControl || !snapshot?.deviceInfo.robotConnected || !point.trim() || !pointName.trim()}
-                    >
-                      导航到此点位
-                    </Button>
-                  </form>
+                  {pointGroup && pointGroup.points.length > 0 ? (
+                    <div>
+                      <div style={{ marginBottom: 8 }}>
+                        <Text type="secondary" style={{ fontSize: 11 }}>分组：{pointGroup.name}</Text>
+                      </div>
+                      <List
+                        size="small"
+                        dataSource={pointGroup.points}
+                        renderItem={(pt: PointItem) => (
+                          <List.Item
+                            style={{ padding: '6px 0' }}
+                            actions={[
+                              <Button
+                                key="nav"
+                                size="small"
+                                type="primary"
+                                icon={<EnvironmentOutlined />}
+                                disabled={!canControl || !pt.isActive}
+                                onClick={() => navigateDirect(pt.command, pt.name)}
+                              >
+                                导航
+                              </Button>,
+                            ]}
+                          >
+                            <List.Item.Meta
+                              avatar={
+                                <div style={{
+                                  width: 28, height: 28, borderRadius: '50%',
+                                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                  background: pt.isChargingPile ? '#52c41a' : pt.isUiVisible ? '#1677ff' : '#f0f0f0',
+                                  color: pt.isChargingPile || pt.isUiVisible ? '#fff' : '#8c8c8c',
+                                  fontSize: 11, fontWeight: 600,
+                                }}>
+                                  {pt.isChargingPile ? <BatteryChargingIcon style={{ fontSize: 13 }} /> : <EnvironmentOutlined style={{ fontSize: 13 }} />}
+                                </div>
+                              }
+                              title={
+                                <Space size={4}>
+                                  <Text strong style={{ fontSize: 13 }}>{pt.name}</Text>
+                                  {pt.isChargingPile && <Tag color="green" style={{ fontSize: 10, margin: 0, lineHeight: '16px' }}>充电桩</Tag>}
+                                  {!pt.isActive && <Tag color="red" style={{ fontSize: 10, margin: 0, lineHeight: '16px' }}>未启用</Tag>}
+                                  {!pt.isUiVisible && <Tag style={{ fontSize: 10, margin: 0, lineHeight: '16px' }}>不可见</Tag>}
+                                </Space>
+                              }
+                              description={
+                                <Text type="secondary" style={{ fontSize: 11 }}>
+                                  命令值: {pt.command}
+                                </Text>
+                              }
+                            />
+                          </List.Item>
+                        )}
+                      />
+                      <Divider style={{ margin: '8px 0' }} />
+                      <details>
+                        <summary style={{ cursor: 'pointer', fontSize: 12, color: '#8c8c8c' }}>
+                          手动输入点位
+                        </summary>
+                        <form onSubmit={submitDirectNavigation} style={{ marginTop: 8 }}>
+                          <Row gutter={8} style={{ marginBottom: 8 }}>
+                            <Col span={10}>
+                              <Text type="secondary" style={{ fontSize: 11 }}>点位值</Text>
+                              <Input
+                                size="small"
+                                value={point}
+                                onChange={(e) => setPoint(e.target.value)}
+                                placeholder="例如 cdz"
+                                autoComplete="off"
+                              />
+                            </Col>
+                            <Col span={14}>
+                              <Text type="secondary" style={{ fontSize: 11 }}>点位名称</Text>
+                              <Input
+                                size="small"
+                                value={pointName}
+                                onChange={(e) => setPointName(e.target.value)}
+                                placeholder="例如 会议室"
+                              />
+                            </Col>
+                          </Row>
+                          <Button
+                            block
+                            icon={<EnvironmentOutlined />}
+                            htmlType="submit"
+                            disabled={!canControl || !point.trim() || !pointName.trim()}
+                          >
+                            导航到此点位
+                          </Button>
+                        </form>
+                      </details>
+                    </div>
+                  ) : (
+                    <div>
+                      <Alert
+                        type="info"
+                        showIcon
+                        message={pointGroup ? '点位分组为空' : '尚未获取点位分组'}
+                        description={
+                          pointGroup
+                            ? '设备绑定的点位分组中没有点位。'
+                            : status === 'connected'
+                              ? '正在获取点位分组…'
+                              : '连接设备后将自动获取点位分组。'
+                        }
+                        style={{ marginBottom: 12, fontSize: 12 }}
+                      />
+                      <details>
+                        <summary style={{ cursor: 'pointer', fontSize: 12, color: '#8c8c8c' }}>
+                          手动输入点位
+                        </summary>
+                        <form onSubmit={submitDirectNavigation} style={{ marginTop: 8 }}>
+                          <Row gutter={8} style={{ marginBottom: 8 }}>
+                            <Col span={10}>
+                              <Text type="secondary" style={{ fontSize: 11 }}>点位值</Text>
+                              <Input
+                                size="small"
+                                value={point}
+                                onChange={(e) => setPoint(e.target.value)}
+                                placeholder="例如 cdz"
+                                autoComplete="off"
+                              />
+                            </Col>
+                            <Col span={14}>
+                              <Text type="secondary" style={{ fontSize: 11 }}>点位名称</Text>
+                              <Input
+                                size="small"
+                                value={pointName}
+                                onChange={(e) => setPointName(e.target.value)}
+                                placeholder="例如 会议室"
+                              />
+                            </Col>
+                          </Row>
+                          <Button
+                            block
+                            icon={<EnvironmentOutlined />}
+                            htmlType="submit"
+                            disabled={!canControl || !point.trim() || !pointName.trim()}
+                          >
+                            导航到此点位
+                          </Button>
+                        </form>
+                      </details>
+                    </div>
+                  )}
                 </Card>
               </Col>
             </Row>
@@ -993,6 +1309,146 @@ function App() {
             </List.Item>
           )}
         />
+      </Modal>
+
+      {/* 任务流程详情弹窗 */}
+      <Modal
+        title={
+          <Space>
+            <NodeIndexOutlined />
+            {flowName}
+            {snapshot?.command && (
+              <Tag color="blue">{snapshot.command.tasks.length} 个主任务</Tag>
+            )}
+          </Space>
+        }
+        open={flowModalOpen}
+        onCancel={() => setFlowModalOpen(false)}
+        footer={null}
+        width={720}
+      >
+        {snapshot?.command ? (
+          <div>
+            <Paragraph type="secondary" style={{ fontSize: 12 }}>
+              完整任务流程树，按原始根任务顺序排列。点击导航任务可直接跳转或发起直达导航。
+            </Paragraph>
+            <List
+              dataSource={snapshot.command.tasks}
+              renderItem={(taskNode, index) => {
+                const isCurrent = index === snapshot.taskState.taskIndex;
+                const isNavigation = taskNode.type === 'navigation';
+                const navPoint = isNavigation
+                  ? (typeof taskNode.content.command === 'string' ? taskNode.content.command.trim() : '')
+                  : '';
+                const navName = isNavigation
+                  ? (typeof taskNode.content.pointName === 'string' ? taskNode.content.pointName.trim() : '')
+                  : '';
+                const canJump = Boolean(
+                  isNavigation &&
+                  typeof taskNode.step_id === 'number' &&
+                  taskNode.step_id > 0 &&
+                  navPoint &&
+                  navName &&
+                  canControl &&
+                  snapshot.buttons.pauseTask,
+                );
+                const canDirect = Boolean(isNavigation && navPoint && navName && canControl);
+                return (
+                  <List.Item
+                    style={{
+                      background: isCurrent ? '#f0f5ff' : undefined,
+                      paddingLeft: isCurrent ? 12 : undefined,
+                      borderRadius: isCurrent ? 6 : undefined,
+                      marginBottom: 4,
+                    }}
+                    actions={
+                      isNavigation && (canJump || canDirect)
+                        ? [
+                            canJump && (
+                              <Button
+                                key="jump"
+                                size="small"
+                                type="primary"
+                                disabled={!canJump}
+                                onClick={() => {
+                                  if (typeof taskNode.step_id === 'number') {
+                                    setFlowModalOpen(false);
+                                    requestJump({
+                                      key: `step:${taskNode.step_id}`,
+                                      name: navName || taskDisplayName(taskNode),
+                                      rootIndex: index,
+                                      stepId: taskNode.step_id,
+                                      point: navPoint,
+                                      pointName: navName,
+                                      progress: isCurrent ? 'active' : 'pending',
+                                      canNavigate: canJump,
+                                    });
+                                  }
+                                }}
+                              >
+                                跳转
+                              </Button>
+                            ),
+                            canDirect && (
+                              <Button
+                                key="direct"
+                                size="small"
+                                disabled={!canDirect}
+                                onClick={() => {
+                                  setFlowModalOpen(false);
+                                  navigateDirect(navPoint, navName);
+                                }}
+                              >
+                                直达
+                              </Button>
+                            ),
+                          ].filter(Boolean) as React.ReactElement[]
+                        : undefined
+                    }
+                  >
+                    <List.Item.Meta
+                      avatar={
+                        <div style={{
+                          width: 32, height: 32, borderRadius: '50%',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          background: isCurrent ? '#1677ff' : isNavigation ? '#f0f0f0' : '#fafafa',
+                          color: isCurrent ? '#fff' : '#8c8c8c',
+                          fontSize: 12, fontWeight: 600,
+                        }}>
+                          {index + 1}
+                        </div>
+                      }
+                      title={
+                        <Space size={6}>
+                          <Tag>{taskTypeLabel(taskNode)}</Tag>
+                          <Text strong style={{ fontSize: 13 }}>{taskDisplayName(taskNode)}</Text>
+                          {isCurrent && <Tag color="blue">当前</Tag>}
+                          {taskNode.is_show === false && <Tag>隐藏</Tag>}
+                          {isNavigation && navPoint && (
+                            <Text type="secondary" code style={{ fontSize: 10 }}>{navPoint}</Text>
+                          )}
+                        </Space>
+                      }
+                      description={
+                        taskNode.inner_tasks && taskNode.inner_tasks.length > 0 ? (
+                          <Space size={4} wrap>
+                            {taskNode.inner_tasks.map((inner, i) => (
+                              <Tag key={i} style={{ fontSize: 10 }}>
+                                {taskTypeLabel(inner)}: {taskDisplayName(inner)}
+                              </Tag>
+                            ))}
+                          </Space>
+                        ) : null
+                      }
+                    />
+                  </List.Item>
+                );
+              }}
+            />
+          </div>
+        ) : (
+          <Empty description="当前没有任务流程" />
+        )}
       </Modal>
     </AntApp>
   );
