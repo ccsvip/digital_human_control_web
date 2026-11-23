@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   BUTTON_KEYS,
+  buildDeviceRuntimeConfigUrl,
   buildRoutePoints,
   buildTtsOptionsUrl,
   buildTtsRuntimeUrl,
   buildWebSocketUrl,
   createDeviceAction,
   createPointGroupRequest,
+  createRuntimeConfigSubscribeRequest,
   createTaskModeRequest,
   createVoiceBindRequest,
+  extractDeviceVoice,
   isErrorResponse,
   isVoiceBoundMessage,
   parseFlowSnapshot,
@@ -22,6 +25,7 @@ import type {
   ButtonKey,
   ConnectionConfig,
   DeviceAction,
+  DeviceVoiceInfo,
   FlowSnapshot,
   PointGroup,
   TaskModes,
@@ -35,6 +39,14 @@ export const DEFAULT_CONFIG: ConnectionConfig = {
 };
 
 const STORAGE_KEY = 'digital-human-controller.config.v1';
+const VOICE_BIND_TIMEOUT = 8_000;
+
+function sameVoiceId(a: unknown, b: unknown): boolean {
+  if (a === null || a === undefined || b === null || b === undefined) return false;
+  const na = Number(a);
+  const nb = Number(b);
+  return Number.isFinite(na) && Number.isFinite(nb) && na === nb;
+}
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'reconnecting' | 'connected';
 export type LogDirection = 'incoming' | 'outgoing' | 'system';
@@ -102,7 +114,11 @@ export function useController() {
   const pointGroupReqIdRef = useRef<string | null>(null);
   const taskModesReqIdRef = useRef<string | null>(null);
   const voiceBindReqIdRef = useRef<string | null>(null);
+  const voiceBindPendingRef = useRef<VoiceTone | null>(null);
+  const voiceBindTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const voiceTonesRef = useRef<VoiceTone[]>([]);
+  /** 服务端运行时配置里的设备当前音色（唯一可信来源） */
+  const deviceVoiceRef = useRef<DeviceVoiceInfo | null>(null);
 
   configRef.current = config;
   snapshotRef.current = snapshot;
@@ -126,6 +142,82 @@ export function useController() {
     queryTimerRef.current = null;
   }, []);
 
+  const clearVoiceBindTimer = useCallback(() => {
+    if (voiceBindTimerRef.current) clearTimeout(voiceBindTimerRef.current);
+    voiceBindTimerRef.current = null;
+  }, []);
+
+  /** 把服务端返回的设备当前音色映射到音色列表里的条目 */
+  const applyDeviceVoice = useCallback((info: DeviceVoiceInfo | null) => {
+    deviceVoiceRef.current = info;
+    if (!info) return;
+    const matched =
+      voiceTonesRef.current.find((v) => sameVoiceId(v.id, info.id)) ??
+      (info.voiceCode ? voiceTonesRef.current.find((v) => v.voiceCode === info.voiceCode) : undefined);
+    setCurrentVoice(
+      matched ?? {
+        id: info.id,
+        displayName: info.name || info.voiceCode || `音色 ${info.id}`,
+        voiceCode: info.voiceCode,
+        audioUrl: '',
+        iconUrl: '',
+        speechRate: 1,
+        pitchRate: 1,
+        volume: 50,
+        customTestText: '',
+        gender: '',
+        isDefault: false,
+      },
+    );
+  }, []);
+
+  /** 拉取设备运行时配置，读取设备当前音色（GET /api/v1/device-runtime/config/） */
+  const fetchDeviceVoice = useCallback(async () => {
+    const currentConfig = configRef.current;
+    if (!currentConfig.deviceCode.trim()) return;
+    try {
+      const resp = await fetch(buildDeviceRuntimeConfigUrl(currentConfig), {
+        headers: { 'X-Device-Code': currentConfig.deviceCode },
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data: unknown = await resp.json();
+      const info = extractDeviceVoice(data);
+      if (info === undefined) {
+        const msg = (data as { message?: unknown })?.message;
+        throw new Error(typeof msg === 'string' && msg ? msg : '运行时配置格式无法识别');
+      }
+      applyDeviceVoice(info);
+    } catch (reason) {
+      appendLog('system', 'runtime_config_error', `读取设备当前音色失败：${reason instanceof Error ? reason.message : '未知错误'}`);
+    }
+  }, [appendLog, applyDeviceVoice]);
+
+  /** 绑定成功：先乐观更新当前音色、结束 loading，再从服务端确认 */
+  const applyBoundVoice = useCallback(
+    (bound: { id: unknown; name?: unknown; voiceCode?: unknown } | null) => {
+      const pending = voiceBindPendingRef.current;
+      const targetId = bound?.id ?? pending?.id;
+      const matched =
+        voiceTonesRef.current.find((v) => sameVoiceId(v.id, targetId)) ??
+        (pending && sameVoiceId(pending.id, targetId) ? pending : null);
+      const fallback: VoiceTone | null =
+        bound && Number.isFinite(Number(bound.id))
+          ? { id: Number(bound.id), displayName: typeof bound.name === 'string' ? bound.name : '', voiceCode: typeof bound.voiceCode === 'string' ? bound.voiceCode : '', audioUrl: '', iconUrl: '', speechRate: 1, pitchRate: 1, volume: 50, customTestText: '', gender: '', isDefault: false }
+          : null;
+      const next = matched ?? fallback ?? pending;
+      if (next) setCurrentVoice(next);
+      clearVoiceBindTimer();
+      setVoiceBinding(false);
+      voiceBindReqIdRef.current = null;
+      voiceBindPendingRef.current = null;
+      // 以服务端运行时配置为准做一次确认（稍等片刻让后端落库）
+      setTimeout(() => {
+        void fetchDeviceVoice();
+      }, 600);
+    },
+    [clearVoiceBindTimer, fetchDeviceVoice],
+  );
+
   const clearRealtime = useCallback(() => {
     clearQueryTimer();
     setIsQuerying(false);
@@ -145,7 +237,10 @@ export function useController() {
     setVoicePreviewing(false);
     setPreviewText(null);
     voiceBindReqIdRef.current = null;
-  }, [clearQueryTimer]);
+    voiceBindPendingRef.current = null;
+    deviceVoiceRef.current = null;
+    clearVoiceBindTimer();
+  }, [clearQueryTimer, clearVoiceBindTimer]);
 
   const sendAction = useCallback(
     (action: ActionName, params: ActionParams = {}): DeviceAction => {
@@ -224,18 +319,31 @@ export function useController() {
       const data = await resp.json();
       const result = parseTtsOptions(data);
       setVoiceTones(result.voices);
-      if (result.defaultVoiceId != null) {
-        const found = result.voices.find((v) => v.id === result.defaultVoiceId);
-        if (found) setCurrentVoice(found);
-      } else if (result.voices.length > 0) {
-        setCurrentVoice(result.voices[0]);
+      voiceTonesRef.current = result.voices;
+      // 当前音色以设备运行时配置为准；defaultVoiceId 只是系统默认音色，不代表设备当前音色
+      const deviceVoice = deviceVoiceRef.current;
+      if (deviceVoice) {
+        const matched = result.voices.find((v) => sameVoiceId(v.id, deviceVoice.id));
+        if (matched) setCurrentVoice(matched);
+      } else {
+        setCurrentVoice((current) => {
+          if (current) return result.voices.find((v) => sameVoiceId(v.id, current.id)) ?? current;
+          // 运行时配置尚未返回时的临时占位，稍后会被设备真实音色覆盖
+          return (
+            (result.defaultVoiceId != null
+              ? result.voices.find((v) => sameVoiceId(v.id, result.defaultVoiceId))
+              : undefined) ?? null
+          );
+        });
       }
+      // 每次刷新音色列表都向服务端确认一次设备当前音色
+      void fetchDeviceVoice();
     } catch (reason) {
       appendLog('system', 'voice_options_error', reason instanceof Error ? reason.message : '获取音色列表失败');
     } finally {
       setVoiceLoading(false);
     }
-  }, [appendLog]);
+  }, [appendLog, fetchDeviceVoice]);
 
   const bindVoice = useCallback(
     (voice: VoiceTone) => {
@@ -246,16 +354,27 @@ export function useController() {
       try {
         const req = createVoiceBindRequest(currentConfig.deviceCode, voice);
         voiceBindReqIdRef.current = req.id;
+        voiceBindPendingRef.current = voice;
         setVoiceBinding(true);
         const raw = JSON.stringify(req);
         socket.send(raw);
         appendLog('outgoing', 'device.voice.bind', raw);
+        clearVoiceBindTimer();
+        voiceBindTimerRef.current = setTimeout(() => {
+          voiceBindTimerRef.current = null;
+          if (voiceBindReqIdRef.current !== req.id) return;
+          // 没有收到错误回执：设备通常已切换成功，按已绑定处理
+          appendLog('system', 'voice_bind_no_ack', `${VOICE_BIND_TIMEOUT / 1000} 秒内未收到音色绑定回执，按已绑定"${voice.displayName}"处理`);
+          applyBoundVoice(null);
+        }, VOICE_BIND_TIMEOUT);
       } catch (reason) {
         setVoiceBinding(false);
+        voiceBindReqIdRef.current = null;
+        voiceBindPendingRef.current = null;
         throw reason;
       }
     },
-    [appendLog],
+    [appendLog, applyBoundVoice, clearVoiceBindTimer],
   );
 
   const previewVoice = useCallback(
@@ -400,6 +519,15 @@ export function useController() {
         fetchPoints();
         fetchTaskModes();
         fetchVoices();
+        // 订阅运行时配置：音色等配置变更时云端会推送完整配置
+        try {
+          const sub = createRuntimeConfigSubscribeRequest(configRef.current.deviceCode);
+          const raw = JSON.stringify(sub);
+          socket.send(raw);
+          appendLog('outgoing', sub.type, raw);
+        } catch (reason) {
+          appendLog('system', 'runtime_config_subscribe_error', reason instanceof Error ? reason.message : '订阅运行时配置失败');
+        }
       };
 
       socket.onmessage = (event) => {
@@ -468,12 +596,32 @@ export function useController() {
           return;
         }
 
-        if (isVoiceBoundMessage(message)) {
-          const boundVoice = message.payload.voice;
-          const matched = voiceTonesRef.current.find((v) => v.id === boundVoice.id) ?? null;
-          setCurrentVoice(matched ?? { id: boundVoice.id, displayName: boundVoice.name, voiceCode: boundVoice.voiceCode, audioUrl: '', iconUrl: '', speechRate: 1, pitchRate: 1, volume: 50, customTestText: '', gender: '', isDefault: false });
-          setVoiceBinding(false);
-          voiceBindReqIdRef.current = null;
+        // 运行时配置推送（订阅回执或配置变更后的完整配置）：同步设备当前音色
+        if (type.startsWith('device.runtime_config') || type.endsWith('.changed')) {
+          const info = extractDeviceVoice(message);
+          if (info !== undefined) {
+            applyDeviceVoice(info);
+          } else if (type.endsWith('.changed') && type.includes('voice')) {
+            void fetchDeviceVoice();
+          }
+          if (type !== 'device.voice.bound') return;
+        }
+
+        // 音色绑定回执：标准 device.voice.bound，或与本次绑定请求 id 相同的非错误消息
+        const rawMsg = message as { id?: unknown; payload?: { voice?: unknown } };
+        const isBindAck =
+          isVoiceBoundMessage(message) ||
+          (voiceBindReqIdRef.current !== null &&
+            rawMsg.id === voiceBindReqIdRef.current &&
+            !isErrorResponse(message) &&
+            type !== 'device.task_flow.state');
+        if (isBindAck) {
+          const voice = rawMsg.payload?.voice;
+          applyBoundVoice(
+            voice && typeof voice === 'object'
+              ? (voice as { id: unknown; name?: unknown; voiceCode?: unknown })
+              : null,
+          );
           return;
         }
 
@@ -488,8 +636,11 @@ export function useController() {
             taskModesReqIdRef.current = null;
             appendLog('system', 'task_mode_error', `任务模式请求失败: ${err.error.message} (code: ${err.error.code})`);
           } else if (err.id === voiceBindReqIdRef.current) {
+            clearVoiceBindTimer();
             setVoiceBinding(false);
             voiceBindReqIdRef.current = null;
+            voiceBindPendingRef.current = null;
+            setError(`音色绑定失败：${err.error.message}`);
             appendLog('system', 'voice_bind_error', `音色绑定失败: ${err.error.message} (code: ${err.error.code})`);
           }
           return;
@@ -527,7 +678,7 @@ export function useController() {
         }
       };
     },
-    [appendLog, clearRealtime, clearQueryTimer, fetchPoints, fetchTaskModes, fetchVoices, requestState],
+    [appendLog, applyBoundVoice, applyDeviceVoice, clearRealtime, clearQueryTimer, clearVoiceBindTimer, fetchDeviceVoice, fetchPoints, fetchTaskModes, fetchVoices, requestState],
   );
   connectRef.current = connect;
 
@@ -556,6 +707,7 @@ export function useController() {
       shouldReconnectRef.current = false;
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       if (queryTimerRef.current) clearTimeout(queryTimerRef.current);
+      if (voiceBindTimerRef.current) clearTimeout(voiceBindTimerRef.current);
       const socket = wsRef.current;
       if (socket) {
         socket.onopen = null;

@@ -635,6 +635,10 @@ export function buildTtsRuntimeUrl(config: Pick<ConnectionConfig, 'server' | 'po
   return `${buildHttpBaseUrl(config)}/api/v1/ai-models/tts/runtime/`;
 }
 
+export function buildDeviceRuntimeConfigUrl(config: Pick<ConnectionConfig, 'server' | 'port'>): string {
+  return `${buildHttpBaseUrl(config)}/api/v1/device-runtime/config/`;
+}
+
 export function createVoiceBindRequest(deviceCode: string, voice: VoiceTone, id?: string): VoiceBindRequest {
   const code = deviceCode.trim();
   if (!code) throw new Error('设备号不能为空');
@@ -682,6 +686,80 @@ export function parseTtsOptions(data: unknown): TtsOptionsResponse {
 export function isVoiceBoundMessage(message: unknown): message is VoiceBoundMessage {
   if (!isRecord(message)) return false;
   return message.type === 'device.voice.bound' && isRecord(message.payload);
+}
+
+// ===================== 运行时配置（设备当前音色） =====================
+
+/** 设备当前绑定的音色（来自运行时配置） */
+export interface DeviceVoiceInfo {
+  id: number;
+  name: string;
+  voiceCode: string;
+}
+
+export interface RuntimeConfigSubscribeRequest {
+  type: 'device.runtime_config.subscribe';
+  id: string;
+  payload: { deviceCode: string };
+}
+
+export function createRuntimeConfigSubscribeRequest(deviceCode: string, id?: string): RuntimeConfigSubscribeRequest {
+  const code = deviceCode.trim();
+  if (!code) throw new Error('设备号不能为空');
+  return {
+    type: 'device.runtime_config.subscribe',
+    id: id ?? `web-rc-sub-${Date.now().toString(36)}`,
+    payload: { deviceCode: code },
+  };
+}
+
+function toVoiceId(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value);
+  return null;
+}
+
+/**
+ * 从运行时配置对象中提取设备当前音色。
+ * 支持：配置对象本身 / 包在 data 里 / 包在 WS 消息 payload（或 payload.config）里。
+ * 优先 device.voiceToneId，其次 voiceConfiguration.voiceTones[0]，再次 resources.voiceTones[0]。
+ * 返回 undefined 表示这不是运行时配置；返回 null 表示是配置但没有音色。
+ */
+export function extractDeviceVoice(source: unknown): DeviceVoiceInfo | null | undefined {
+  const candidates: unknown[] = [];
+  if (isRecord(source)) {
+    candidates.push(source, source.data, source.config);
+    if (isRecord(source.payload)) candidates.push(source.payload, source.payload.config, source.payload.data);
+  }
+  const config = candidates.find(
+    (c): c is Record<string, unknown> =>
+      isRecord(c) && (isRecord(c.device) || isRecord(c.voiceConfiguration) || isRecord(c.agentApplication)),
+  );
+  if (!config) return undefined;
+
+  const device = isRecord(config.device) ? config.device : null;
+  const deviceVoiceId = toVoiceId(device?.voiceToneId);
+  if (device && deviceVoiceId !== null) {
+    return {
+      id: deviceVoiceId,
+      name: typeof device.voiceToneName === 'string' ? device.voiceToneName : '',
+      voiceCode: typeof device.voiceToneCode === 'string' ? device.voiceToneCode : '',
+    };
+  }
+
+  const pickFirst = (holder: unknown): DeviceVoiceInfo | null => {
+    if (!isRecord(holder) || !Array.isArray(holder.voiceTones) || holder.voiceTones.length === 0) return null;
+    const first = holder.voiceTones[0];
+    if (!isRecord(first)) return null;
+    const id = toVoiceId(first.id);
+    if (id === null) return null;
+    return {
+      id,
+      name: typeof first.name === 'string' ? first.name : typeof first.displayName === 'string' ? first.displayName : '',
+      voiceCode: typeof first.voiceCode === 'string' ? first.voiceCode : '',
+    };
+  };
+  return pickFirst(config.voiceConfiguration) ?? pickFirst(config.resources) ?? null;
 }
 
 
