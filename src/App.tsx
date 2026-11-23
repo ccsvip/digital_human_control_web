@@ -37,11 +37,13 @@ import {
   CloseOutlined,
   CodeOutlined,
   CopyOutlined,
+  DeleteOutlined,
   DisconnectOutlined,
   EnvironmentOutlined,
   EyeInvisibleOutlined,
   EyeOutlined,
   FastForwardOutlined,
+  HistoryOutlined,
   LinkOutlined,
   LoadingOutlined,
   MessageOutlined,
@@ -222,12 +224,15 @@ function App() {
     voiceBinding,
     voicePreviewing,
     previewText,
+    runtimeDevice,
+    deviceHistory,
   } = controller;
 
   const [question, setQuestion] = useState('');
   const [point, setPoint] = useState('');
   const [pointName, setPointName] = useState('');
   const [showDeviceCode, setShowDeviceCode] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [pointsModalOpen, setPointsModalOpen] = useState(false);
   const [flowModalOpen, setFlowModalOpen] = useState(false);
   const [logFilter, setLogFilter] = useState<'all' | LogDirection>('all');
@@ -426,6 +431,21 @@ function App() {
     setLastSeenLogId(logs[0]?.id ?? null);
   };
 
+  const maskDeviceCode = (code: string) => (code.length > 14 ? `${code.slice(0, 6)}…${code.slice(-4)}` : code);
+
+  /** 设备名称：优先云端运行时配置 device.name，其次设备状态快照里的 deviceName */
+  const deviceName = runtimeDevice?.name || snapshot?.deviceInfo.deviceName || '';
+  const currentCode = config.deviceCode.trim();
+  const historyName = deviceHistory.find((entry) => entry.code === currentCode)?.name ?? '';
+  const inputDeviceName = (!configDirty && runtimeDevice?.name) || historyName;
+
+  const selectHistoryDevice = (code: string) => {
+    const entry = deviceHistory.find((item) => item.code === code);
+    updateConfig('deviceCode', code);
+    setHistoryOpen(false);
+    notify(`已选择设备：${entry?.name || maskDeviceCode(code)}`);
+  };
+
   const copyDeviceCode = async () => {
     try {
       await navigator.clipboard.writeText(config.deviceCode);
@@ -449,6 +469,101 @@ function App() {
   return (
     <AntApp>
       {contextHolder}
+      <Modal
+        title={<Space><HistoryOutlined />历史设备号</Space>}
+        open={historyOpen}
+        onCancel={() => setHistoryOpen(false)}
+        width={520}
+        footer={
+          <Space>
+            {deviceHistory.length > 0 && (
+              <Popconfirm
+                title="清空全部历史设备号？"
+                okText="清空"
+                cancelText="取消"
+                onConfirm={() => {
+                  controller.clearDeviceHistory();
+                  notify('历史记录已清空');
+                }}
+              >
+                <Button danger>清空历史</Button>
+              </Popconfirm>
+            )}
+            <Button onClick={() => setHistoryOpen(false)}>关闭</Button>
+          </Space>
+        }
+      >
+        {deviceHistory.length === 0 ? (
+          <Empty description="暂无历史设备号，连接成功后会自动记录" />
+        ) : (
+          <List
+            className="device-history-list"
+            dataSource={deviceHistory}
+            renderItem={(entry) => {
+              const isCurrent = entry.code === currentCode;
+              return (
+                <List.Item
+                  className={`device-history-row${isCurrent ? ' device-history-row--active' : ''}`}
+                  onClick={() => selectHistoryDevice(entry.code)}
+                  actions={[
+                    <Button
+                      key="use"
+                      type={isCurrent ? 'default' : 'primary'}
+                      size="small"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        selectHistoryDevice(entry.code);
+                      }}
+                    >
+                      {isCurrent ? '当前' : '使用'}
+                    </Button>,
+                    <Popconfirm
+                      key="del"
+                      title="删除这条记录？"
+                      okText="删除"
+                      cancelText="取消"
+                      onConfirm={(e) => {
+                        e?.stopPropagation();
+                        controller.removeDeviceHistory(entry.code);
+                      }}
+                      onCancel={(e) => e?.stopPropagation()}
+                    >
+                      <Button
+                        type="text"
+                        size="small"
+                        danger
+                        icon={<DeleteOutlined />}
+                        aria-label="删除该历史记录"
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    </Popconfirm>,
+                  ]}
+                >
+                  <List.Item.Meta
+                    avatar={<Avatar icon={<RobotOutlined />} />}
+                    title={
+                      <Space size={6}>
+                        <Text strong>{entry.name || '未命名设备'}</Text>
+                        {isCurrent && <Tag color="blue">当前</Tag>}
+                      </Space>
+                    }
+                    description={
+                      <Space orientation="vertical" size={0}>
+                        <Text type="secondary" copyable={{ text: entry.code, tooltips: ['复制设备号', '已复制'] }} className="device-history-item__code">
+                          {maskDeviceCode(entry.code)}
+                        </Text>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          最近连接：{entry.lastUsedAt ? formatTime(entry.lastUsedAt) : '—'}
+                        </Text>
+                      </Space>
+                    }
+                  />
+                </List.Item>
+              );
+            }}
+          />
+        )}
+      </Modal>
       <Layout className="console-shell">
         {/* 左侧连接配置面板 */}
         <Sider width={300} theme="light" className="console-sidebar">
@@ -501,7 +616,14 @@ function App() {
                     />
                   </Form.Item>
 
-                  <Form.Item label="设备号">
+                  <Form.Item
+                    label="设备号"
+                    extra={
+                      inputDeviceName ? (
+                        <Text type="secondary" style={{ fontSize: 12 }}>设备名称：{inputDeviceName}</Text>
+                      ) : undefined
+                    }
+                  >
                     <Input
                       prefix={<RobotOutlined />}
                       type={showDeviceCode ? 'text' : 'password'}
@@ -512,6 +634,19 @@ function App() {
                       autoComplete="off"
                       suffix={
                         <Space size={2}>
+                          <Tooltip title="历史设备号">
+                            <Button
+                              type="text"
+                              size="small"
+                              icon={<HistoryOutlined />}
+                              aria-label="历史设备号"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setHistoryOpen(true);
+                              }}
+                            />
+                          </Tooltip>
                           <Button
                             type="text"
                             size="small"
@@ -584,6 +719,11 @@ function App() {
                       key: 'channel',
                       label: '服务通道',
                       children: <Tag color={CONNECTION_COLORS[status]}>{CONNECTION_LABELS[status]}</Tag>,
+                    },
+                    {
+                      key: 'deviceName',
+                      label: '设备名称',
+                      children: <Text strong>{deviceName || '—'}</Text>,
                     },
                     {
                       key: 'device',
@@ -663,7 +803,7 @@ function App() {
                         text={<Text type="secondary">设备 {deviceStatus}</Text>}
                       />
                       <Title level={4}>
-                        {snapshot?.deviceInfo.deviceName || '尚未获取设备信息'}
+                        {deviceName || '尚未获取设备信息'}
                       </Title>
                       <Text type="secondary">
                         {snapshot ? '设备完整状态已同步' : '连接服务器后，将在此展示数字人与机器人状态'}

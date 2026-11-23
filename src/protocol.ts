@@ -791,4 +791,43 @@ export function runtimeConfigAction(message: unknown): string {
   return '';
 }
 
+// ===================== 运行时配置（设备信息） =====================
 
+/** 运行时配置里的设备展示信息（GET /device-runtime/config/ 返回的 device 字段） */
+export interface RuntimeDeviceInfo {
+  deviceCode: string;
+  name: string;
+  location: string;
+  tenantName: string;
+  groupName: string;
+  applicationName: string;
+}
+
+/**
+ * 从运行时配置中提取设备信息（device.name 即设备名称）。
+ * 支持：配置对象本身 / 包在 data 里 / 包在 WS 消息 payload（或 payload.config）里。
+ * 返回 undefined 表示这不是运行时配置；返回 null 表示是配置但没有 device 字段。
+ */
+export function extractRuntimeDevice(source: unknown): RuntimeDeviceInfo | null | undefined {
+  const candidates: unknown[] = [];
+  if (isRecord(source)) {
+    candidates.push(source, source.data, source.config);
+    if (isRecord(source.payload)) candidates.push(source.payload, source.payload.config, source.payload.data);
+  }
+  const config = candidates.find(
+    (c): c is Record<string, unknown> =>
+      isRecord(c) && (isRecord(c.device) || isRecord(c.voiceConfiguration) || isRecord(c.agentApplication)),
+  );
+  if (!config) return undefined;
+  if (!isRecord(config.device)) return null;
+  const device = config.device;
+  const str = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+  return {
+    deviceCode: str(device.deviceCode) || str(device.id),
+    name: str(device.name),
+    location: str(device.location),
+    tenantName: str(device.tenantName),
+    groupName: str(device.groupName),
+    applicationName: str(device.applicationName),
+  };
+}

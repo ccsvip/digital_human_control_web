@@ -12,6 +12,7 @@ import {
   createTaskModeRequest,
   createVoiceBindRequest,
   extractDeviceVoice,
+  extractRuntimeDevice,
   extractPointGroup,
   isErrorResponse,
   isVoiceBoundMessage,
@@ -30,6 +31,7 @@ import type {
   DeviceVoiceInfo,
   FlowSnapshot,
   PointGroup,
+  RuntimeDeviceInfo,
   TaskModes,
   VoiceTone,
 } from './protocol';
@@ -42,6 +44,40 @@ export const DEFAULT_CONFIG: ConnectionConfig = {
 
 const STORAGE_KEY = 'digital-human-controller.config.v1';
 const VOICE_BIND_TIMEOUT = 8_000;
+const HISTORY_KEY = 'digital-human-controller.device-history.v1';
+const HISTORY_LIMIT = 10;
+
+/** 设备号历史记录（连接成功后记录，设备名称来自运行时配置 device.name） */
+export interface DeviceHistoryEntry {
+  code: string;
+  name: string;
+  lastUsedAt: string;
+}
+
+function loadDeviceHistory(): DeviceHistoryEntry[] {
+  try {
+    const saved = JSON.parse(localStorage.getItem(HISTORY_KEY) ?? '[]') as unknown;
+    if (!Array.isArray(saved)) return [];
+    return saved
+      .filter((item): item is DeviceHistoryEntry => typeof item?.code === 'string' && item.code.trim() !== '')
+      .map((item) => ({
+        code: item.code.trim(),
+        name: typeof item.name === 'string' ? item.name : '',
+        lastUsedAt: typeof item.lastUsedAt === 'string' ? item.lastUsedAt : '',
+      }))
+      .slice(0, HISTORY_LIMIT);
+  } catch {
+    return [];
+  }
+}
+
+function saveDeviceHistory(list: DeviceHistoryEntry[]) {
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
+  } catch {
+    // 浏览器不允许存储时忽略，仅影响历史记录
+  }
+}
 
 function sameVoiceId(a: unknown, b: unknown): boolean {
   if (a === null || a === undefined || b === null || b === undefined) return false;
@@ -103,6 +139,8 @@ export function useController() {
   const [voiceBinding, setVoiceBinding] = useState(false);
   const [voicePreviewing, setVoicePreviewing] = useState(false);
   const [previewText, setPreviewText] = useState<string | null>(null);
+  const [runtimeDevice, setRuntimeDevice] = useState<RuntimeDeviceInfo | null>(null);
+  const [deviceHistory, setDeviceHistory] = useState<DeviceHistoryEntry[]>(loadDeviceHistory);
 
   const wsRef = useRef<WebSocket | null>(null);
   const configRef = useRef(config);
@@ -121,6 +159,8 @@ export function useController() {
   const voiceTonesRef = useRef<VoiceTone[]>([]);
   /** 服务端运行时配置里的设备当前音色（唯一可信来源） */
   const deviceVoiceRef = useRef<DeviceVoiceInfo | null>(null);
+  /** 当前连接使用的设备号（用于把设备名称写回历史记录） */
+  const activeDeviceCodeRef = useRef('');
 
   configRef.current = config;
   snapshotRef.current = snapshot;
@@ -138,6 +178,48 @@ export function useController() {
     };
     setLogs((current) => [entry, ...current].slice(0, 50));
   }, []);
+
+  const updateDeviceHistory = useCallback((updater: (list: DeviceHistoryEntry[]) => DeviceHistoryEntry[]) => {
+    setDeviceHistory((current) => {
+      const next = updater(current).slice(0, HISTORY_LIMIT);
+      saveDeviceHistory(next);
+      return next;
+    });
+  }, []);
+
+  /** 记录 / 置顶一个设备号，保留已知的设备名称 */
+  const rememberDevice = useCallback(
+    (code: string, name?: string) => {
+      const trimmed = code.trim();
+      if (!trimmed) return;
+      updateDeviceHistory((list) => {
+        const existing = list.find((entry) => entry.code === trimmed);
+        const entry: DeviceHistoryEntry = {
+          code: trimmed,
+          name: name?.trim() || existing?.name || '',
+          lastUsedAt: new Date().toISOString(),
+        };
+        return [entry, ...list.filter((item) => item.code !== trimmed)];
+      });
+    },
+    [updateDeviceHistory],
+  );
+
+  /** 从运行时配置中读取设备名称等信息，并同步到历史记录 */
+  const applyRuntimeDevice = useCallback(
+    (source: unknown, code: string = activeDeviceCodeRef.current) => {
+      const info = extractRuntimeDevice(source);
+      if (!info) return;
+      setRuntimeDevice(info);
+      const trimmed = code.trim();
+      if (info.name && trimmed) {
+        updateDeviceHistory((list) =>
+          list.map((entry) => (entry.code === trimmed && entry.name !== info.name ? { ...entry, name: info.name } : entry)),
+        );
+      }
+    },
+    [updateDeviceHistory],
+  );
 
   const clearQueryTimer = useCallback(() => {
     if (queryTimerRef.current) clearTimeout(queryTimerRef.current);
@@ -209,11 +291,12 @@ export function useController() {
         throw new Error(typeof msg === 'string' && msg ? msg : '运行时配置格式无法识别');
       }
       applyDeviceVoice(info);
+      applyRuntimeDevice(data, currentConfig.deviceCode);
       applyRuntimePoints(data);
     } catch (reason) {
       appendLog('system', 'runtime_config_error', `读取设备当前音色失败：${reason instanceof Error ? reason.message : '未知错误'}`);
     }
-  }, [appendLog, applyDeviceVoice, applyRuntimePoints]);
+  }, [appendLog, applyDeviceVoice, applyRuntimeDevice, applyRuntimePoints]);
 
   /** 绑定成功：先乐观更新当前音色、结束 loading，再从服务端确认 */
   const applyBoundVoice = useCallback(
@@ -262,6 +345,7 @@ export function useController() {
     voiceBindReqIdRef.current = null;
     voiceBindPendingRef.current = null;
     deviceVoiceRef.current = null;
+    setRuntimeDevice(null);
     clearVoiceBindTimer();
   }, [clearQueryTimer, clearVoiceBindTimer]);
 
@@ -506,6 +590,7 @@ export function useController() {
       setStatus(isReconnect ? 'reconnecting' : 'connecting');
       setActiveUrl(url);
       setActiveConfig({ ...configRef.current });
+      activeDeviceCodeRef.current = configRef.current.deviceCode.trim();
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(configRef.current));
       } catch {
@@ -538,6 +623,7 @@ export function useController() {
         setStatus('connected');
         setError(null);
         appendLog('system', 'connected', `已连接 ${url}`);
+        rememberDevice(activeDeviceCodeRef.current);
         requestState();
         fetchPoints();
         fetchTaskModes();
@@ -621,6 +707,7 @@ export function useController() {
 
         // 运行时配置推送（订阅回执或配置变更后的完整配置）：同步设备当前音色和直达导航点位
         if (type.startsWith('device.runtime_config') || type.endsWith('.changed')) {
+          applyRuntimeDevice(message);
           const info = extractDeviceVoice(message);
           if (info !== undefined) {
             applyDeviceVoice(info);
@@ -710,7 +797,7 @@ export function useController() {
         }
       };
     },
-    [appendLog, applyBoundVoice, applyDeviceVoice, applyRuntimePoints, clearRealtime, clearQueryTimer, clearVoiceBindTimer, fetchDeviceVoice, fetchPoints, fetchTaskModes, fetchVoices, requestState],
+    [appendLog, applyBoundVoice, applyDeviceVoice, applyRuntimeDevice, applyRuntimePoints, clearRealtime, clearQueryTimer, clearVoiceBindTimer, fetchDeviceVoice, fetchPoints, fetchTaskModes, fetchVoices, rememberDevice, requestState],
   );
   connectRef.current = connect;
 
@@ -778,6 +865,10 @@ export function useController() {
     voiceBinding,
     voicePreviewing,
     previewText,
+    runtimeDevice,
+    deviceHistory,
+    removeDeviceHistory: (code: string) => updateDeviceHistory((list) => list.filter((entry) => entry.code !== code)),
+    clearDeviceHistory: () => updateDeviceHistory(() => []),
     connect,
     disconnect,
     requestState,
