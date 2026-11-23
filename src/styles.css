@@ -592,3 +592,40 @@ p, li { text-wrap: pretty; }
   cursor: not-allowed;
   opacity: 0.6;
 }
+
+/* 问答测试 */
+.chat-test-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 280px;
+  overflow-y: auto;
+  margin-bottom: 10px;
+  padding-right: 2px;
+}
+
+.chat-test-bubble {
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-test-bubble--q {
+  background: rgba(22, 119, 255, 0.08);
+  margin-left: 24px;
+}
+
+.chat-test-bubble--a {
+  background: rgba(0, 0, 0, 0.03);
+  margin-top: 4px;
+  margin-right: 24px;
+}
+
+/* 设备资源 */
+.resource-list {
+  max-height: 260px;
+  overflow-y: auto;
+}

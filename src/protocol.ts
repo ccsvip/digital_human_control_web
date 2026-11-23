@@ -639,6 +639,18 @@ export function buildDeviceRuntimeConfigUrl(config: Pick<ConnectionConfig, 'serv
   return `${buildHttpBaseUrl(config)}/api/v1/device-runtime/config/`;
 }
 
+export function buildAsrDeviceStatusUrl(config: Pick<ConnectionConfig, 'server' | 'port'>): string {
+  return `${buildHttpBaseUrl(config)}/api/v1/ai-models/asr/device-status/`;
+}
+
+export function buildDeviceResourcesUrl(config: Pick<ConnectionConfig, 'server' | 'port'>): string {
+  return `${buildHttpBaseUrl(config)}/api/v1/device-runtime/resources/`;
+}
+
+export function buildVoiceChatUrl(config: Pick<ConnectionConfig, 'server' | 'port'>): string {
+  return `${buildHttpBaseUrl(config)}/api/v1/device/voice-chat/`;
+}
+
 export function createVoiceBindRequest(deviceCode: string, voice: VoiceTone, id?: string): VoiceBindRequest {
   const code = deviceCode.trim();
   if (!code) throw new Error('设备号不能为空');
@@ -823,6 +835,10 @@ export interface RuntimeDeviceInfo {
   suggestedQuestions: string[];
   /** 唤醒词（中文 / 英文显示文本，已去重） */
   wakeWords: string[];
+  /** 日志归档：是否已上传、文件名、上传时间 */
+  hasLogArchive: boolean;
+  logArchiveFileName: string;
+  logArchiveUploadedAt: string;
 }
 
 const SUGGESTED_QUESTION_MAX_LENGTH = 120;
@@ -891,5 +907,161 @@ export function extractRuntimeDevice(source: unknown): RuntimeDeviceInfo | null 
     openingMessage: str(agent.openingMessage),
     suggestedQuestions,
     wakeWords: uniq(wakeWordTexts),
+    hasLogArchive: device.hasLogArchive === true,
+    logArchiveFileName: str(device.logArchiveFileName),
+    logArchiveUploadedAt: str(device.logArchiveUploadedAt),
+  };
+}
+
+// ===================== 语音识别状态（GET /ai-models/asr/device-status/） =====================
+
+export interface AsrDeviceStatus {
+  configured: boolean;
+  isActive: boolean;
+  model: string;
+  protocol: string;
+  vadThreshold: number | null;
+  vadSilenceDurationMs: number | null;
+  updatedAt: string;
+}
+
+/** 从响应中读取云端错误信息（code / message），没有时返回空字符串 */
+export function readCloudError(source: unknown): string {
+  if (!isRecord(source)) return '';
+  const message = typeof source.message === 'string' ? source.message : '';
+  const code = typeof source.code === 'string' || typeof source.code === 'number' ? String(source.code) : '';
+  if (message && code) return `${message}（code=${code}）`;
+  return message || (code ? `code=${code}` : '');
+}
+
+export function parseAsrDeviceStatus(source: unknown): AsrDeviceStatus {
+  const data = isRecord(source) && isRecord(source.data) && 'configured' in source.data ? source.data : source;
+  if (!isRecord(data) || typeof data.configured !== 'boolean') {
+    throw new Error(readCloudError(source) || '语音识别状态格式无法识别');
+  }
+  const num = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : null);
+  return {
+    configured: data.configured,
+    isActive: data.isActive === true,
+    model: typeof data.model === 'string' ? data.model : '',
+    protocol: typeof data.protocol === 'string' ? data.protocol : '',
+    vadThreshold: num(data.vadThreshold),
+    vadSilenceDurationMs: num(data.vadSilenceDurationMs),
+    updatedAt: typeof data.updated_at === 'string' ? data.updated_at : '',
+  };
+}
+
+// ===================== 设备资源（运行时配置 resources / POST /device-runtime/resources/） =====================
+
+export type DeviceResourceKind = 'images' | 'videos' | 'models' | 'voiceTones';
+
+export interface DeviceResourceItem {
+  id: string;
+  name: string;
+  /** 分类 / 性别·朝向 / 音色编码 等补充信息 */
+  extra: string;
+  /** 可打开的地址：图片、视频、试听音频或模型封面 */
+  url: string;
+  /** 缩略图（图片本身或模型封面） */
+  thumb: string;
+}
+
+export type DeviceResources = Record<DeviceResourceKind, DeviceResourceItem[]>;
+
+export const DEVICE_RESOURCE_KINDS: { key: DeviceResourceKind; label: string }[] = [
+  { key: 'images', label: '图片' },
+  { key: 'videos', label: '视频' },
+  { key: 'models', label: '数字人模型' },
+  { key: 'voiceTones', label: '音色' },
+];
+
+function normalizeResourceItem(kind: DeviceResourceKind, raw: unknown, index: number): DeviceResourceItem | null {
+  if (!isRecord(raw)) return null;
+  const str = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+  const id = raw.id === undefined || raw.id === null ? `${kind}-${index}` : String(raw.id);
+  if (kind === 'models') {
+    const name = str(raw.c_name) || str(raw.e_name) || str(raw.file_name) || `模型 ${id}`;
+    const extra = [str(raw.gender), str(raw.direction), str(raw.e_name)].filter(Boolean).join(' · ');
+    const image = str(raw.image_path);
+    return { id, name, extra, url: image, thumb: image };
+  }
+  if (kind === 'voiceTones') {
+    return {
+      id,
+      name: str(raw.name) || str(raw.displayName) || str(raw.voiceCode) || `音色 ${id}`,
+      extra: str(raw.voiceCode),
+      url: str(raw.audioUrl),
+      thumb: str(raw.iconUrl),
+    };
+  }
+  const url = str(raw.url);
+  return {
+    id,
+    name: str(raw.name) || `资源 ${id}`,
+    extra: [str(raw.category), str(raw.colorTheme)].filter(Boolean).join(' · '),
+    url,
+    thumb: kind === 'images' ? url : '',
+  };
+}
+
+/**
+ * 提取设备资源。支持：运行时配置（resources 字段）、resources 接口 resourceType=application 的响应、
+ * 包在 data / payload / payload.config 里的情况。返回 undefined 表示消息中没有资源信息。
+ */
+export function extractDeviceResources(source: unknown): DeviceResources | undefined {
+  const candidates: unknown[] = [];
+  if (isRecord(source)) {
+    candidates.push(source, source.data, source.config);
+    if (isRecord(source.payload)) candidates.push(source.payload, source.payload.config, source.payload.data);
+  }
+  const holder = candidates.find((c): c is Record<string, unknown> => isRecord(c) && isRecord(c.resources));
+  if (!holder) return undefined;
+  const resources = holder.resources as Record<string, unknown>;
+  const result = { images: [], videos: [], models: [], voiceTones: [] } as DeviceResources;
+  for (const { key } of DEVICE_RESOURCE_KINDS) {
+    const list = Array.isArray(resources[key]) ? (resources[key] as unknown[]) : [];
+    result[key] = list
+      .map((item, index) => normalizeResourceItem(key, item, index))
+      .filter((item): item is DeviceResourceItem => item !== null);
+  }
+  return result;
+}
+
+// ===================== 问答测试（POST /device/voice-chat/） =====================
+
+export interface VoiceChatResult {
+  sessionId: string;
+  questionText: string;
+  answerText: string;
+  followUpSuggestedQuestions: string[];
+  audioBase64: string | null;
+  audioContentType: string;
+}
+
+export function parseVoiceChatResult(source: unknown): VoiceChatResult {
+  const data = isRecord(source) && isRecord(source.data) && ('answerText' in source.data || 'sessionId' in source.data)
+    ? source.data
+    : source;
+  if (!isRecord(data) || (typeof data.answerText !== 'string' && typeof data.sessionId !== 'string')) {
+    throw new Error(readCloudError(source) || '问答结果格式无法识别');
+  }
+  const str = (value: unknown) => (typeof value === 'string' ? value : '');
+  let answer = str(data.answerText);
+  // answerText 为空时，尝试从 answerBlocks 拼出文本（结构未在文档中说明，按常见 text/content 字段兼容）
+  if (!answer.trim() && Array.isArray(data.answerBlocks)) {
+    answer = data.answerBlocks
+      .map((block) => (typeof block === 'string' ? block : isRecord(block) ? str(block.text) || str(block.content) : ''))
+      .filter(Boolean)
+      .join('\n');
+  }
+  return {
+    sessionId: str(data.sessionId),
+    questionText: str(data.questionText),
+    answerText: answer,
+    followUpSuggestedQuestions: Array.isArray(data.followUpSuggestedQuestions)
+      ? data.followUpSuggestedQuestions.filter((q): q is string => typeof q === 'string' && q.trim() !== '')
+      : [],
+    audioBase64: typeof data.audioBase64 === 'string' && data.audioBase64 ? data.audioBase64 : null,
+    audioContentType: str(data.audioContentType) || 'audio/wav',
   };
 }

@@ -31,6 +31,13 @@ import {
 import {
   ApiOutlined,
   BulbOutlined,
+  ClearOutlined,
+  CommentOutlined,
+  FileZipOutlined,
+  FolderOpenOutlined,
+  PictureOutlined,
+  UserOutlined,
+  VideoCameraOutlined,
   InfoCircleOutlined,
   SafetyCertificateOutlined,
   AudioOutlined,
@@ -64,9 +71,10 @@ import {
   ThunderboltOutlined,
   WarningOutlined,
 } from '@ant-design/icons';
-import type { ActionName, ButtonKey, PointItem, RoutePoint, VoiceTone } from './protocol';
+import type { ActionName, ButtonKey, DeviceResourceKind, PointItem, RoutePoint, VoiceChatResult, VoiceTone } from './protocol';
 import type { ActionParams, ConnectionConfig } from './protocol';
 import {
+  DEVICE_RESOURCE_KINDS,
   buildRoutePoints,
   buildWebSocketUrl,
   getCurrentTasks,
@@ -229,6 +237,13 @@ function App() {
     previewText,
     runtimeDevice,
     deviceHistory,
+    asrStatus,
+    asrError,
+    asrLoading,
+    deviceResources,
+    resourcesLoading,
+    chatTurns,
+    chatSending,
   } = controller;
 
   const [question, setQuestion] = useState('');
@@ -236,6 +251,8 @@ function App() {
   const [pointName, setPointName] = useState('');
   const [showDeviceCode, setShowDeviceCode] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [resourceKind, setResourceKind] = useState<DeviceResourceKind>('images');
+  const [chatInput, setChatInput] = useState('');
   const [pointsModalOpen, setPointsModalOpen] = useState(false);
   const [flowModalOpen, setFlowModalOpen] = useState(false);
   const [logFilter, setLogFilter] = useState<'all' | LogDirection>('all');
@@ -464,6 +481,29 @@ function App() {
     const label = runtimeDevice.authorizationTypeLabel || runtimeDevice.authorizationType || '未知';
     return runtimeDevice.expiresAt ? `${label} · 到期 ${runtimeDevice.expiresAt}` : label;
   })();
+
+  const refreshResources = () => {
+    controller.fetchResources().catch((reason: unknown) => {
+      notify(reason instanceof Error ? `读取设备资源失败：${reason.message}` : '读取设备资源失败', 'error');
+    });
+  };
+
+  const submitChatTest = (text: string = chatInput) => {
+    const q = text.trim();
+    if (!q || chatSending) return;
+    setChatInput('');
+    controller.sendChatTest(q).catch((reason: unknown) => {
+      notify(reason instanceof Error ? `问答失败：${reason.message}` : '问答失败', 'error');
+    });
+  };
+
+  const playChatAudio = (result: VoiceChatResult) => {
+    if (!result.audioBase64) return;
+    const audio = new Audio(`data:${result.audioContentType};base64,${result.audioBase64}`);
+    audio.play().catch(() => notify('音频播放失败', 'error'));
+  };
+
+  const currentResources = deviceResources?.[resourceKind] ?? [];
 
   const copyDeviceCode = async () => {
     try {
@@ -1335,12 +1375,225 @@ function App() {
                           },
                           { key: 'heartbeat', label: '最近心跳', children: <Text>{runtimeDevice.lastHeartbeat || '—'}</Text> },
                           { key: 'authAt', label: '最近激活', children: <Text>{runtimeDevice.lastAuthAt || '—'}</Text> },
+                          {
+                            key: 'asr',
+                            label: '语音识别',
+                            children: asrLoading ? (
+                              <Text type="secondary"><LoadingOutlined /> 读取中</Text>
+                            ) : asrStatus ? (
+                              <Space size={4} wrap>
+                                {!asrStatus.configured ? (
+                                  <Tag color="red" style={{ margin: 0 }}>未配置</Tag>
+                                ) : asrStatus.isActive ? (
+                                  <Tag color="green" style={{ margin: 0 }}>已启用</Tag>
+                                ) : (
+                                  <Tag color="orange" style={{ margin: 0 }}>未启用</Tag>
+                                )}
+                                {asrStatus.model && (
+                                  <Tooltip
+                                    title={[
+                                      asrStatus.protocol && `协议：${asrStatus.protocol}`,
+                                      asrStatus.vadThreshold != null && `VAD 阈值：${asrStatus.vadThreshold}`,
+                                      asrStatus.vadSilenceDurationMs != null && `静音判定：${asrStatus.vadSilenceDurationMs} ms`,
+                                      asrStatus.updatedAt && `更新于：${formatTime(asrStatus.updatedAt)}`,
+                                    ].filter(Boolean).join('；') || undefined}
+                                  >
+                                    <Text style={{ fontSize: 12 }}>{asrStatus.model}</Text>
+                                  </Tooltip>
+                                )}
+                                <Button type="text" size="small" icon={<ReloadOutlined />} aria-label="刷新语音识别状态" onClick={() => void controller.fetchAsrStatus()} />
+                              </Space>
+                            ) : (
+                              <Space size={4}>
+                                <Text type="danger" style={{ fontSize: 12 }}>{asrError || '—'}</Text>
+                                <Button type="text" size="small" icon={<ReloadOutlined />} aria-label="刷新语音识别状态" onClick={() => void controller.fetchAsrStatus()} />
+                              </Space>
+                            ),
+                          },
+                          {
+                            key: 'opening',
+                            label: '开场白',
+                            children: runtimeDevice.openingMessage ? (
+                              <Paragraph style={{ margin: 0 }} ellipsis={{ rows: 2, expandable: true, symbol: '展开' }}>
+                                {runtimeDevice.openingMessage}
+                              </Paragraph>
+                            ) : (
+                              <Text type="secondary">未设置</Text>
+                            ),
+                          },
+                          {
+                            key: 'logs',
+                            label: '日志归档',
+                            children: runtimeDevice.hasLogArchive ? (
+                              <Space orientation="vertical" size={0}>
+                                <Text style={{ fontSize: 12 }}><FileZipOutlined /> {runtimeDevice.logArchiveFileName || '已上传'}</Text>
+                                <Text type="secondary" style={{ fontSize: 12 }}>上传于 {runtimeDevice.logArchiveUploadedAt || '—'}</Text>
+                              </Space>
+                            ) : (
+                              <Text type="secondary">未上传</Text>
+                            ),
+                          },
                         ]}
                       />
                     ) : (
                       <Empty
                         image={Empty.PRESENTED_IMAGE_SIMPLE}
                         description={status === 'connected' ? '正在读取设备运行时配置…' : '连接设备后显示授权、版本、唤醒词等信息'}
+                      />
+                    )}
+                  </Card>
+
+                  {/* 问答测试：POST /api/v1/device/voice-chat/，只在控制端显示回答，会写入对话记录 */}
+                  <Card
+                    size="small"
+                    className="chat-test-card"
+                    title={<Space><CommentOutlined /> 问答测试</Space>}
+                    extra={
+                      <Tooltip title="清空记录并开始新会话">
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<ClearOutlined />}
+                          aria-label="新会话"
+                          disabled={chatTurns.length === 0 || chatSending}
+                          onClick={controller.resetChatTest}
+                        />
+                      </Tooltip>
+                    }
+                  >
+                    <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
+                      直接询问智能体并在此查看回答，设备不会播报；会写入该设备的对话记录。
+                    </Text>
+                    {chatTurns.length > 0 && (
+                      <div className="chat-test-list">
+                        {chatTurns.map((turn) => (
+                          <div key={turn.id} className="chat-test-turn">
+                            <div className="chat-test-bubble chat-test-bubble--q">
+                              <UserOutlined /> {turn.question}
+                            </div>
+                            <div className="chat-test-bubble chat-test-bubble--a">
+                              {turn.pending ? (
+                                <Text type="secondary"><LoadingOutlined /> 思考中…</Text>
+                              ) : turn.error ? (
+                                <Text type="danger">{turn.error}</Text>
+                              ) : (
+                                <>
+                                  <div className="chat-test-answer">
+                                    <RobotOutlined /> {turn.result?.answerText || <Text type="secondary">（未返回回答文本）</Text>}
+                                  </div>
+                                  {turn.result?.audioBase64 && (
+                                    <Button size="small" type="link" icon={<SoundOutlined />} onClick={() => turn.result && playChatAudio(turn.result)}>
+                                      播放语音
+                                    </Button>
+                                  )}
+                                  {(turn.result?.followUpSuggestedQuestions.length ?? 0) > 0 && (
+                                    <div className="suggested-questions__list" style={{ marginTop: 6 }}>
+                                      {turn.result?.followUpSuggestedQuestions.map((q) => (
+                                        <Tag key={q} className="suggested-question" color="blue" onClick={() => submitChatTest(q)}>
+                                          {q}
+                                        </Tag>
+                                      ))}
+                                    </div>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <Space.Compact style={{ width: '100%' }}>
+                      <Input
+                        value={chatInput}
+                        onChange={(e) => setChatInput(e.target.value)}
+                        onPressEnter={() => submitChatTest()}
+                        placeholder={status === 'connected' ? '输入问题，回车发送' : '连接设备后可测试'}
+                        maxLength={500}
+                        disabled={status !== 'connected'}
+                      />
+                      <Button
+                        type="primary"
+                        icon={chatSending ? <LoadingOutlined /> : <SendOutlined />}
+                        disabled={status !== 'connected' || chatSending || !chatInput.trim()}
+                        onClick={() => submitChatTest()}
+                      >
+                        测试
+                      </Button>
+                    </Space.Compact>
+                  </Card>
+
+                  {/* 设备资源：来自运行时配置 resources，可通过 POST /device-runtime/resources/ 刷新 */}
+                  <Card
+                    size="small"
+                    title={<Space><FolderOpenOutlined /> 设备资源</Space>}
+                    extra={
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={resourcesLoading ? <LoadingOutlined /> : <ReloadOutlined />}
+                        aria-label="刷新设备资源"
+                        disabled={status !== 'connected' || resourcesLoading}
+                        onClick={refreshResources}
+                      />
+                    }
+                  >
+                    {deviceResources ? (
+                      <>
+                        <Segmented
+                          block
+                          size="small"
+                          value={resourceKind}
+                          onChange={(value) => setResourceKind(value as DeviceResourceKind)}
+                          options={DEVICE_RESOURCE_KINDS.map(({ key, label }) => ({
+                            value: key,
+                            label: `${label} ${deviceResources[key].length}`,
+                          }))}
+                          style={{ marginBottom: 8 }}
+                        />
+                        {currentResources.length > 0 ? (
+                          <List
+                            size="small"
+                            className="resource-list"
+                            dataSource={currentResources}
+                            renderItem={(item) => (
+                              <List.Item
+                                actions={
+                                  item.url
+                                    ? [
+                                        <a key="open" href={item.url} target="_blank" rel="noreferrer">
+                                          <LinkOutlined /> 打开
+                                        </a>,
+                                      ]
+                                    : []
+                                }
+                              >
+                                <List.Item.Meta
+                                  avatar={
+                                    <Avatar
+                                      shape="square"
+                                      src={item.thumb || undefined}
+                                      icon={
+                                        resourceKind === 'videos' ? <VideoCameraOutlined />
+                                          : resourceKind === 'models' ? <UserOutlined />
+                                          : resourceKind === 'voiceTones' ? <AudioOutlined />
+                                          : <PictureOutlined />
+                                      }
+                                    />
+                                  }
+                                  title={<Text ellipsis style={{ maxWidth: 180 }}>{item.name}</Text>}
+                                  description={item.extra ? <Text type="secondary" style={{ fontSize: 12 }}>{item.extra}</Text> : undefined}
+                                />
+                              </List.Item>
+                            )}
+                          />
+                        ) : (
+                          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="该类资源为空" />
+                        )}
+                      </>
+                    ) : (
+                      <Empty
+                        image={Empty.PRESENTED_IMAGE_SIMPLE}
+                        description={status === 'connected' ? '运行时配置中没有资源信息，可点击右上角刷新' : '连接设备后显示分配给设备的资源'}
                       />
                     )}
                   </Card>

@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   BUTTON_KEYS,
+  buildAsrDeviceStatusUrl,
+  buildDeviceResourcesUrl,
+  buildVoiceChatUrl,
   buildDeviceRuntimeConfigUrl,
   buildRoutePoints,
   buildTtsOptionsUrl,
@@ -11,19 +14,25 @@ import {
   createRuntimeConfigSubscribeRequest,
   createTaskModeRequest,
   createVoiceBindRequest,
+  extractDeviceResources,
   extractDeviceVoice,
   extractRuntimeDevice,
   extractPointGroup,
   isErrorResponse,
   isVoiceBoundMessage,
+  parseAsrDeviceStatus,
   parseFlowSnapshot,
   parsePointGroup,
   parseTaskModes,
   parseTtsOptions,
+  parseVoiceChatResult,
+  readCloudError,
   runtimeConfigAction,
 } from './protocol';
 import type {
   ActionName,
+  AsrDeviceStatus,
+  DeviceResources,
   ActionParams,
   ButtonKey,
   ConnectionConfig,
@@ -33,6 +42,7 @@ import type {
   PointGroup,
   RuntimeDeviceInfo,
   TaskModes,
+  VoiceChatResult,
   VoiceTone,
 } from './protocol';
 
@@ -84,6 +94,26 @@ function sameVoiceId(a: unknown, b: unknown): boolean {
   const na = Number(a);
   const nb = Number(b);
   return Number.isFinite(na) && Number.isFinite(nb) && na === nb;
+}
+
+/** 问答测试的一轮记录 */
+export interface ChatTestTurn {
+  id: string;
+  question: string;
+  result: VoiceChatResult | null;
+  error: string | null;
+  pending: boolean;
+  timestamp: string;
+}
+
+async function readJson(resp: Response): Promise<unknown> {
+  const text = await resp.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return text;
+  }
 }
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'reconnecting' | 'connected';
@@ -141,6 +171,15 @@ export function useController() {
   const [previewText, setPreviewText] = useState<string | null>(null);
   const [runtimeDevice, setRuntimeDevice] = useState<RuntimeDeviceInfo | null>(null);
   const [deviceHistory, setDeviceHistory] = useState<DeviceHistoryEntry[]>(loadDeviceHistory);
+  const [asrStatus, setAsrStatus] = useState<AsrDeviceStatus | null>(null);
+  const [asrError, setAsrError] = useState<string | null>(null);
+  const [asrLoading, setAsrLoading] = useState(false);
+  const [deviceResources, setDeviceResources] = useState<DeviceResources | null>(null);
+  const [resourcesLoading, setResourcesLoading] = useState(false);
+  const [chatTurns, setChatTurns] = useState<ChatTestTurn[]>([]);
+  const [chatSending, setChatSending] = useState(false);
+  const chatSessionIdRef = useRef('');
+  const chatCounterRef = useRef(0);
 
   const wsRef = useRef<WebSocket | null>(null);
   const configRef = useRef(config);
@@ -292,6 +331,8 @@ export function useController() {
       }
       applyDeviceVoice(info);
       applyRuntimeDevice(data, currentConfig.deviceCode);
+      const resources = extractDeviceResources(data);
+      if (resources) setDeviceResources(resources);
       applyRuntimePoints(data);
     } catch (reason) {
       appendLog('system', 'runtime_config_error', `读取设备当前音色失败：${reason instanceof Error ? reason.message : '未知错误'}`);
@@ -346,6 +387,14 @@ export function useController() {
     voiceBindPendingRef.current = null;
     deviceVoiceRef.current = null;
     setRuntimeDevice(null);
+    setAsrStatus(null);
+    setAsrError(null);
+    setAsrLoading(false);
+    setDeviceResources(null);
+    setResourcesLoading(false);
+    setChatTurns([]);
+    setChatSending(false);
+    chatSessionIdRef.current = '';
     clearVoiceBindTimer();
   }, [clearQueryTimer, clearVoiceBindTimer]);
 
@@ -525,6 +574,103 @@ export function useController() {
     [],
   );
 
+  /** 语音识别状态（GET /api/v1/ai-models/asr/device-status/，只读） */
+  const fetchAsrStatus = useCallback(async () => {
+    const currentConfig = configRef.current;
+    if (!currentConfig.deviceCode.trim()) return;
+    setAsrLoading(true);
+    try {
+      const resp = await fetch(buildAsrDeviceStatusUrl(currentConfig), {
+        headers: { 'X-Device-Code': currentConfig.deviceCode },
+      });
+      const data = await readJson(resp);
+      if (!resp.ok) throw new Error(readCloudError(data) || `HTTP ${resp.status}`);
+      setAsrStatus(parseAsrDeviceStatus(data));
+      setAsrError(null);
+    } catch (reason) {
+      const msg = reason instanceof Error ? reason.message : '未知错误';
+      setAsrStatus(null);
+      setAsrError(msg);
+      appendLog('system', 'asr_status_error', `读取语音识别状态失败：${msg}`);
+    } finally {
+      setAsrLoading(false);
+    }
+  }, [appendLog]);
+
+  /** 设备资源（POST /api/v1/device-runtime/resources/，resourceType=application，只读） */
+  const fetchResources = useCallback(async () => {
+    const currentConfig = configRef.current;
+    if (!currentConfig.deviceCode.trim()) return;
+    setResourcesLoading(true);
+    try {
+      const resp = await fetch(buildDeviceResourcesUrl(currentConfig), {
+        method: 'POST',
+        headers: { 'X-Device-Code': currentConfig.deviceCode, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resourceType: 'application' }),
+      });
+      const data = await readJson(resp);
+      if (!resp.ok) throw new Error(readCloudError(data) || `HTTP ${resp.status}`);
+      const resources = extractDeviceResources(data);
+      if (!resources) throw new Error('资源列表格式无法识别');
+      setDeviceResources(resources);
+    } catch (reason) {
+      appendLog('system', 'resources_error', `读取设备资源失败：${reason instanceof Error ? reason.message : '未知错误'}`);
+      throw reason;
+    } finally {
+      setResourcesLoading(false);
+    }
+  }, [appendLog]);
+
+  /**
+   * 问答测试（POST /api/v1/device/voice-chat/）。
+   * 注意：会写入该设备的对话记录；同一会话内多轮回传 sessionId。
+   */
+  const sendChatTest = useCallback(
+    async (text: string) => {
+      const currentConfig = configRef.current;
+      const question = text.trim();
+      if (!currentConfig.deviceCode.trim()) throw new Error('设备号不能为空');
+      if (!question) throw new Error('问题内容不能为空');
+      chatCounterRef.current += 1;
+      const turnId = `${Date.now()}-${chatCounterRef.current}`;
+      setChatTurns((current) => [
+        ...current,
+        { id: turnId, question, result: null, error: null, pending: true, timestamp: new Date().toISOString() },
+      ]);
+      setChatSending(true);
+      const body: Record<string, unknown> = { text: question };
+      if (chatSessionIdRef.current) body.sessionId = chatSessionIdRef.current;
+      const raw = JSON.stringify(body);
+      appendLog('outgoing', 'http.voice_chat', raw);
+      try {
+        const resp = await fetch(buildVoiceChatUrl(currentConfig), {
+          method: 'POST',
+          headers: { 'X-Device-Code': currentConfig.deviceCode, 'Content-Type': 'application/json' },
+          body: raw,
+        });
+        const data = await readJson(resp);
+        appendLog('incoming', 'http.voice_chat', typeof data === 'string' ? data : JSON.stringify(data));
+        if (!resp.ok) throw new Error(readCloudError(data) || `HTTP ${resp.status}`);
+        const result = parseVoiceChatResult(data);
+        if (result.sessionId) chatSessionIdRef.current = result.sessionId;
+        setChatTurns((current) => current.map((t) => (t.id === turnId ? { ...t, result, pending: false } : t)));
+        return result;
+      } catch (reason) {
+        const msg = reason instanceof Error ? reason.message : '问答失败';
+        setChatTurns((current) => current.map((t) => (t.id === turnId ? { ...t, error: msg, pending: false } : t)));
+        throw reason;
+      } finally {
+        setChatSending(false);
+      }
+    },
+    [appendLog],
+  );
+
+  const resetChatTest = useCallback(() => {
+    chatSessionIdRef.current = '';
+    setChatTurns([]);
+  }, []);
+
   const fetchTaskModes = useCallback(() => {
     const socket = wsRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
@@ -628,6 +774,7 @@ export function useController() {
         fetchPoints();
         fetchTaskModes();
         fetchVoices();
+        void fetchAsrStatus();
         // 订阅运行时配置：音色等配置变更时云端会推送完整配置
         try {
           const sub = createRuntimeConfigSubscribeRequest(configRef.current.deviceCode);
@@ -708,6 +855,8 @@ export function useController() {
         // 运行时配置推送（订阅回执或配置变更后的完整配置）：同步设备当前音色和直达导航点位
         if (type.startsWith('device.runtime_config') || type.endsWith('.changed')) {
           applyRuntimeDevice(message);
+          const pushedResources = extractDeviceResources(message);
+          if (pushedResources) setDeviceResources(pushedResources);
           const info = extractDeviceVoice(message);
           if (info !== undefined) {
             applyDeviceVoice(info);
@@ -797,7 +946,7 @@ export function useController() {
         }
       };
     },
-    [appendLog, applyBoundVoice, applyDeviceVoice, applyRuntimeDevice, applyRuntimePoints, clearRealtime, clearQueryTimer, clearVoiceBindTimer, fetchDeviceVoice, fetchPoints, fetchTaskModes, fetchVoices, rememberDevice, requestState],
+    [appendLog, applyBoundVoice, applyDeviceVoice, applyRuntimeDevice, applyRuntimePoints, clearRealtime, clearQueryTimer, clearVoiceBindTimer, fetchAsrStatus, fetchDeviceVoice, fetchPoints, fetchTaskModes, fetchVoices, rememberDevice, requestState],
   );
   connectRef.current = connect;
 
@@ -867,6 +1016,17 @@ export function useController() {
     previewText,
     runtimeDevice,
     deviceHistory,
+    asrStatus,
+    asrError,
+    asrLoading,
+    deviceResources,
+    resourcesLoading,
+    chatTurns,
+    chatSending,
+    fetchAsrStatus,
+    fetchResources,
+    sendChatTest,
+    resetChatTest,
     removeDeviceHistory: (code: string) => updateDeviceHistory((list) => list.filter((entry) => entry.code !== code)),
     clearDeviceHistory: () => updateDeviceHistory(() => []),
     connect,
