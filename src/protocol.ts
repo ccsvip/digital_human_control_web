@@ -793,7 +793,7 @@ export function runtimeConfigAction(message: unknown): string {
 
 // ===================== 运行时配置（设备信息） =====================
 
-/** 运行时配置里的设备展示信息（GET /device-runtime/config/ 返回的 device 字段） */
+/** 运行时配置里的设备展示信息（GET /device-runtime/config/ 返回的 device / agentApplication / wakeWords 等字段） */
 export interface RuntimeDeviceInfo {
   deviceCode: string;
   name: string;
@@ -801,7 +801,32 @@ export interface RuntimeDeviceInfo {
   tenantName: string;
   groupName: string;
   applicationName: string;
+  /** 授权类型，例如 permanent */
+  authorizationType: string;
+  /** 授权类型中文，例如 永久 */
+  authorizationTypeLabel: string;
+  /** 授权到期时间，永久授权为空 */
+  expiresAt: string;
+  /** 授权是否已过期（配置顶层 authorizationExpired） */
+  authorizationExpired: boolean;
+  isEnabled: boolean | null;
+  isSoftwareTrial: boolean;
+  softwareVersion: string;
+  systemVersion: string;
+  lastHeartbeat: string;
+  lastAuthAt: string;
+  /** 智能体名称与模型 */
+  agentName: string;
+  llmModelName: string;
+  openingMessage: string;
+  /** 建议问题：去空、去重，单条最长 120 字 */
+  suggestedQuestions: string[];
+  /** 唤醒词（中文 / 英文显示文本，已去重） */
+  wakeWords: string[];
 }
+
+const SUGGESTED_QUESTION_MAX_LENGTH = 120;
+const SUGGESTED_QUESTION_LIMIT = 20;
 
 /**
  * 从运行时配置中提取设备信息（device.name 即设备名称）。
@@ -819,9 +844,31 @@ export function extractRuntimeDevice(source: unknown): RuntimeDeviceInfo | null 
       isRecord(c) && (isRecord(c.device) || isRecord(c.voiceConfiguration) || isRecord(c.agentApplication)),
   );
   if (!config) return undefined;
-  if (!isRecord(config.device)) return null;
-  const device = config.device;
   const str = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+  const device = isRecord(config.device) ? config.device : {};
+  const agent = isRecord(config.agentApplication) ? config.agentApplication : {};
+
+  const uniq = (values: string[]) => Array.from(new Set(values.filter(Boolean)));
+
+  const suggestedQuestions = uniq(
+    (Array.isArray(agent.suggestedQuestions) ? agent.suggestedQuestions : [])
+      .map((q) => str(q).slice(0, SUGGESTED_QUESTION_MAX_LENGTH)),
+  ).slice(0, SUGGESTED_QUESTION_LIMIT);
+
+  const wakeWordTexts: string[] = [];
+  if (Array.isArray(config.wakeWords)) {
+    for (const item of config.wakeWords) {
+      if (isRecord(item)) wakeWordTexts.push(str(item.text));
+      else wakeWordTexts.push(str(item));
+    }
+  }
+  if (Array.isArray(config.englishWakeWords)) {
+    for (const item of config.englishWakeWords) {
+      if (!isRecord(item)) continue;
+      wakeWordTexts.push(str(item.chineseText), str(item.englishText) || str(item.text));
+    }
+  }
+
   return {
     deviceCode: str(device.deviceCode) || str(device.id),
     name: str(device.name),
@@ -829,5 +876,20 @@ export function extractRuntimeDevice(source: unknown): RuntimeDeviceInfo | null 
     tenantName: str(device.tenantName),
     groupName: str(device.groupName),
     applicationName: str(device.applicationName),
+    authorizationType: str(device.authorizationType),
+    authorizationTypeLabel: str(device.authorizationTypeLabel),
+    expiresAt: str(device.expiresAt) || str(config.expiresAt),
+    authorizationExpired: config.authorizationExpired === true,
+    isEnabled: typeof device.isEnabled === 'boolean' ? device.isEnabled : null,
+    isSoftwareTrial: device.isSoftwareTrial === true,
+    softwareVersion: str(device.softwareVersion),
+    systemVersion: str(device.systemVersion),
+    lastHeartbeat: str(device.lastHeartbeat),
+    lastAuthAt: str(device.lastAuthAt),
+    agentName: str(agent.name) || str(device.agentApplicationName),
+    llmModelName: str(agent.llmModelName),
+    openingMessage: str(agent.openingMessage),
+    suggestedQuestions,
+    wakeWords: uniq(wakeWordTexts),
   };
 }

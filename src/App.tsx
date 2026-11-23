@@ -30,6 +30,9 @@ import {
 } from 'antd';
 import {
   ApiOutlined,
+  BulbOutlined,
+  InfoCircleOutlined,
+  SafetyCertificateOutlined,
   AudioOutlined,
   ThunderboltOutlined as BatteryChargingIcon,
   CheckOutlined,
@@ -445,6 +448,22 @@ function App() {
     setHistoryOpen(false);
     notify(`已选择设备：${entry?.name || maskDeviceCode(code)}`);
   };
+
+  const suggestedQuestions = runtimeDevice?.suggestedQuestions ?? [];
+
+  const askSuggested = (text: string) => {
+    if (!canControl) {
+      notify('设备不可控制，暂时无法提问', 'error');
+      return;
+    }
+    execute('textQuestion', { text });
+  };
+
+  const authorizationText = (() => {
+    if (!runtimeDevice) return '—';
+    const label = runtimeDevice.authorizationTypeLabel || runtimeDevice.authorizationType || '未知';
+    return runtimeDevice.expiresAt ? `${label} · 到期 ${runtimeDevice.expiresAt}` : label;
+  })();
 
   const copyDeviceCode = async () => {
     try {
@@ -1228,6 +1247,102 @@ function App() {
                         </Button>
                       </div>
                     </form>
+
+                    {/* 建议问题：来自运行时配置 agentApplication.suggestedQuestions，点击直接发送 */}
+                    {suggestedQuestions.length > 0 && (
+                      <div className="suggested-questions">
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          <BulbOutlined /> 建议问题（点击直接提问）
+                        </Text>
+                        <div className="suggested-questions__list">
+                          {suggestedQuestions.map((q) => (
+                            <Tooltip key={q} title={canControl ? `发送：${q}` : '设备不可控制'}>
+                              <Tag
+                                className={`suggested-question${canControl ? '' : ' suggested-question--disabled'}`}
+                                color={canControl ? 'blue' : 'default'}
+                                onClick={() => askSuggested(q)}
+                              >
+                                {q}
+                              </Tag>
+                            </Tooltip>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </Card>
+
+                  {/* 设备信息：来自运行时配置 device / agentApplication / wakeWords */}
+                  <Card size="small" title={<Space><InfoCircleOutlined /> 设备信息</Space>}>
+                    {runtimeDevice ? (
+                      <Descriptions
+                        column={1}
+                        size="small"
+                        colon={false}
+                        styles={{ label: { color: 'rgba(0,0,0,0.45)', width: 76 } }}
+                        items={[
+                          {
+                            key: 'auth',
+                            label: '授权',
+                            children: (
+                              <Space size={4} wrap>
+                                <SafetyCertificateOutlined />
+                                <Text>{authorizationText}</Text>
+                                {runtimeDevice.authorizationExpired && <Tag color="red">已过期</Tag>}
+                                {runtimeDevice.isSoftwareTrial && <Tag color="orange">试用</Tag>}
+                                {runtimeDevice.isEnabled === false && <Tag color="red">已停用</Tag>}
+                              </Space>
+                            ),
+                          },
+                          ...(runtimeDevice.tenantName
+                            ? [{ key: 'tenant', label: '所属单位', children: <Text>{runtimeDevice.tenantName}</Text> }]
+                            : []),
+                          ...(runtimeDevice.location || runtimeDevice.groupName
+                            ? [{
+                                key: 'location',
+                                label: '位置/分组',
+                                children: <Text>{[runtimeDevice.location, runtimeDevice.groupName].filter(Boolean).join(' / ')}</Text>,
+                              }]
+                            : []),
+                          {
+                            key: 'agent',
+                            label: '智能体',
+                            children: (
+                              <Text>
+                                {runtimeDevice.agentName || '—'}
+                                {runtimeDevice.llmModelName && <Text type="secondary">（{runtimeDevice.llmModelName}）</Text>}
+                              </Text>
+                            ),
+                          },
+                          {
+                            key: 'wake',
+                            label: '唤醒词',
+                            children: runtimeDevice.wakeWords.length > 0 ? (
+                              <Space size={[4, 4]} wrap>
+                                {runtimeDevice.wakeWords.map((w) => <Tag key={w} style={{ margin: 0 }}>{w}</Tag>)}
+                              </Space>
+                            ) : (
+                              <Text type="secondary">未配置</Text>
+                            ),
+                          },
+                          {
+                            key: 'version',
+                            label: '软件版本',
+                            children: (
+                              <Paragraph style={{ margin: 0 }} ellipsis={{ tooltip: runtimeDevice.systemVersion || undefined }}>
+                                {runtimeDevice.softwareVersion || '—'}
+                              </Paragraph>
+                            ),
+                          },
+                          { key: 'heartbeat', label: '最近心跳', children: <Text>{runtimeDevice.lastHeartbeat || '—'}</Text> },
+                          { key: 'authAt', label: '最近激活', children: <Text>{runtimeDevice.lastAuthAt || '—'}</Text> },
+                        ]}
+                      />
+                    ) : (
+                      <Empty
+                        image={Empty.PRESENTED_IMAGE_SIMPLE}
+                        description={status === 'connected' ? '正在读取设备运行时配置…' : '连接设备后显示授权、版本、唤醒词等信息'}
+                      />
+                    )}
                   </Card>
 
                   {/* 音色选择 */}
