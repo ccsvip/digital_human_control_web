@@ -12,12 +12,14 @@ import {
   createTaskModeRequest,
   createVoiceBindRequest,
   extractDeviceVoice,
+  extractPointGroup,
   isErrorResponse,
   isVoiceBoundMessage,
   parseFlowSnapshot,
   parsePointGroup,
   parseTaskModes,
   parseTtsOptions,
+  runtimeConfigAction,
 } from './protocol';
 import type {
   ActionName,
@@ -171,6 +173,26 @@ export function useController() {
     );
   }, []);
 
+  /**
+   * 用运行时配置里的 application.pointGroup 更新直达导航点位。
+   * 返回 true 表示消息里带有点位信息并已应用。
+   */
+  const applyRuntimePoints = useCallback(
+    (source: unknown): boolean => {
+      try {
+        const group = extractPointGroup(source);
+        if (group === undefined) return false;
+        setPointGroup(group);
+        setPointGroupLoading(false);
+        return true;
+      } catch (reason) {
+        appendLog('system', 'point_group_parse_error', `运行时配置中的点位分组解析失败：${reason instanceof Error ? reason.message : '未知错误'}`);
+        return false;
+      }
+    },
+    [appendLog],
+  );
+
   /** 拉取设备运行时配置，读取设备当前音色（GET /api/v1/device-runtime/config/） */
   const fetchDeviceVoice = useCallback(async () => {
     const currentConfig = configRef.current;
@@ -187,10 +209,11 @@ export function useController() {
         throw new Error(typeof msg === 'string' && msg ? msg : '运行时配置格式无法识别');
       }
       applyDeviceVoice(info);
+      applyRuntimePoints(data);
     } catch (reason) {
       appendLog('system', 'runtime_config_error', `读取设备当前音色失败：${reason instanceof Error ? reason.message : '未知错误'}`);
     }
-  }, [appendLog, applyDeviceVoice]);
+  }, [appendLog, applyDeviceVoice, applyRuntimePoints]);
 
   /** 绑定成功：先乐观更新当前音色、结束 loading，再从服务端确认 */
   const applyBoundVoice = useCallback(
@@ -596,13 +619,22 @@ export function useController() {
           return;
         }
 
-        // 运行时配置推送（订阅回执或配置变更后的完整配置）：同步设备当前音色
+        // 运行时配置推送（订阅回执或配置变更后的完整配置）：同步设备当前音色和直达导航点位
         if (type.startsWith('device.runtime_config') || type.endsWith('.changed')) {
           const info = extractDeviceVoice(message);
           if (info !== undefined) {
             applyDeviceVoice(info);
           } else if (type.endsWith('.changed') && type.includes('voice')) {
             void fetchDeviceVoice();
+          }
+          const pointsApplied = applyRuntimePoints(message);
+          if (pointsApplied) {
+            if (runtimeConfigAction(message) === 'pointGroupChanged') {
+              appendLog('system', 'point_group_synced', '点位分组已变更，已按运行时配置推送自动刷新');
+            }
+          } else if (type === 'device.point_group.changed' || runtimeConfigAction(message) === 'pointGroupChanged') {
+            // 推送里没带点位内容时，主动重新读取一次
+            fetchPoints();
           }
           if (type !== 'device.voice.bound') return;
         }
@@ -678,7 +710,7 @@ export function useController() {
         }
       };
     },
-    [appendLog, applyBoundVoice, applyDeviceVoice, clearRealtime, clearQueryTimer, clearVoiceBindTimer, fetchDeviceVoice, fetchPoints, fetchTaskModes, fetchVoices, requestState],
+    [appendLog, applyBoundVoice, applyDeviceVoice, applyRuntimePoints, clearRealtime, clearQueryTimer, clearVoiceBindTimer, fetchDeviceVoice, fetchPoints, fetchTaskModes, fetchVoices, requestState],
   );
   connectRef.current = connect;
 

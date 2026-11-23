@@ -762,4 +762,33 @@ export function extractDeviceVoice(source: unknown): DeviceVoiceInfo | null | un
   return pickFirst(config.voiceConfiguration) ?? pickFirst(config.resources) ?? null;
 }
 
+/**
+ * 从运行时配置中提取点位分组（application.pointGroup），结构与 device.point_group 的 payload.pointGroup 相同。
+ * 支持：配置对象本身 / 包在 data 里 / 包在 WS 消息 payload（或 payload.config）里。
+ * 返回 undefined 表示消息里没有点位信息（不应覆盖现有数据）；返回 null 表示应用未绑定点位分组。
+ * 点位结构不合法时抛出异常。
+ */
+export function extractPointGroup(source: unknown): PointGroup | null | undefined {
+  const candidates: unknown[] = [];
+  if (isRecord(source)) {
+    candidates.push(source, source.data, source.config);
+    if (isRecord(source.payload)) candidates.push(source.payload, source.payload.config, source.payload.data);
+  }
+  const config = candidates.find(
+    (c): c is Record<string, unknown> => isRecord(c) && isRecord(c.application) && 'pointGroup' in c.application,
+  );
+  if (!config) return undefined;
+  const application = config.application as Record<string, unknown>;
+  if (application.pointGroup === null) return null;
+  return parsePointGroup({ type: 'device.point_group', payload: { pointGroup: application.pointGroup } }).pointGroup;
+}
+
+/** 运行时配置推送里的变更原因（如 pointGroupChanged），没有时返回空字符串 */
+export function runtimeConfigAction(message: unknown): string {
+  if (!isRecord(message)) return '';
+  if (typeof message.action === 'string') return message.action;
+  if (isRecord(message.payload) && typeof message.payload.action === 'string') return message.payload.action;
+  return '';
+}
+
 

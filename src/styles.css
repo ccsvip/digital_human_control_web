@@ -195,19 +195,131 @@ p, li { text-wrap: pretty; }
   border: 1px solid #ffe58f;
   font-size: 12px;
 }
-.inner-task {
+/* ================= 任务进度卡片 ================= */
+.progress-card__flow { cursor: pointer; color: #315efb; }
+.progress-card__flow:hover { text-decoration: underline; }
+.progress-body { display: flex; flex-direction: column; gap: 12px; }
+.task-main { display: flex; align-items: flex-start; gap: 18px; }
+.task-main__index {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 14px;
-  padding: 10px 12px;
+  flex-direction: column;
+  flex: 0 0 auto;
+  min-width: 92px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  background: #f3f6ff;
+  border: 1px solid #e2e8ff;
+}
+.task-main__label { font-size: 11px; color: #69758a; }
+.task-main__value { font-size: 26px; font-weight: 600; line-height: 1.2; color: #315efb; font-variant-numeric: tabular-nums; }
+.task-main__value small { font-size: 13px; font-weight: 400; color: #8a94a5; }
+.task-main__body { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; flex: 1; min-width: 0; }
+.task-text.ant-typography { margin: 0; font-size: 13px; line-height: 1.7; color: #25334a; white-space: pre-wrap; word-break: break-word; }
+.task-text--main.ant-typography { font-size: 15px; font-weight: 600; color: #182235; }
+.task-text .ant-typography-expand,
+.task-text .ant-typography-collapse { margin-inline-start: 6px; font-size: 12px; font-weight: 400; }
+.inner-task {
+  padding: 10px 14px 12px;
   border-radius: 8px;
   border-left: 3px solid #52c41a;
   background: #f6ffed;
 }
-.route-steps { overflow-x: auto; padding-bottom: 4px; }
-.route-steps .ant-steps { min-width: max-content; }
-.route-steps .ant-steps-item { min-width: 110px; }
+.inner-task__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+
+/* ================= 导航路线 ================= */
+.route-section { margin-top: 16px; padding-top: 14px; border-top: 1px dashed #e4e8f0; }
+.route-section--empty { padding-bottom: 2px; }
+.route-section__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.route-section__help { color: #a0a8b6; cursor: help; font-size: 13px; }
+.route-section__help:hover { color: #315efb; }
+.route-progress { display: inline-flex; align-items: center; gap: 8px; }
+.route-progress__bar { position: relative; width: 96px; height: 6px; border-radius: 6px; background: #edf0f5; overflow: hidden; }
+.route-progress__bar > span { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 6px; background: linear-gradient(90deg, #52c41a, #315efb); transition: width 240ms ease; }
+
+/* 路线轨道：只显示当前点位附近的窗口，不横向滚动 */
+.route-rail { display: flex; align-items: flex-start; gap: 8px; }
+.route-rail__steps.ant-steps { flex: 1; min-width: 0; }
+.route-rail__steps .ant-steps-item { min-width: 0; }
+.route-rail__steps .ant-steps-item-title { padding-inline-end: 8px; max-width: 100%; }
+.route-step__name { display: inline-block; max-width: 120px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; vertical-align: bottom; color: inherit; opacity: 0.7; }
+.route-step__name--link { cursor: pointer; opacity: 1; }
+.route-step__name--link:hover { color: #315efb; }
+.route-step__num { font-size: 12px; font-weight: 600; }
+.route-more {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  padding: 2px 10px;
+  border: 1px dashed #d4dae5;
+  border-radius: 12px;
+  background: #fafbfc;
+  color: #69758a;
+  font-size: 11px;
+  line-height: 20px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.route-more:hover { border-color: #a9baf4; color: #315efb; background: #f7f9ff; }
+
+/* 导航路线抽屉 */
+.route-drawer { display: flex; flex-direction: column; gap: 12px; }
+.route-drawer__tools {
+  position: sticky;
+  top: -24px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: -24px -24px 0;
+  padding: 16px 24px 12px;
+  background: #fff;
+  border-bottom: 1px solid #f0f2f5;
+}
+.route-list { position: relative; display: flex; flex-direction: column; }
+.route-list::before {
+  content: '';
+  position: absolute;
+  top: 20px;
+  bottom: 20px;
+  left: 17px;
+  width: 2px;
+  background: #edf0f5;
+}
+.route-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 8px 7px 2px;
+  border-radius: 8px;
+  transition: background-color 140ms ease;
+}
+.route-row:hover { background: #f7f9fc; }
+.route-row__dot {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  margin-left: 2px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  box-shadow: 0 0 0 1px #e4e8f0;
+}
+.route-row--pending .route-row__dot { background: #f0f2f5 !important; color: #8a94a5; }
+.route-row--active { background: #f0f5ff; }
+.route-row--active .route-row__dot { box-shadow: 0 0 0 3px rgba(22, 119, 255, 0.2); }
+.route-row__body { flex: 1; min-width: 0; }
+.route-row__name { font-size: 13px; font-weight: 600; color: #182235; }
+.route-row--completed .route-row__name { color: #69758a; font-weight: 500; }
+.route-row__meta { font-size: 11px; color: #a0a8b6; font-family: ui-monospace, Consolas, monospace; }
+.route-row__jump.ant-btn { opacity: 0; transition: opacity 140ms ease; }
+.route-row:hover .route-row__jump.ant-btn:not(:disabled),
+.route-row__jump.ant-btn:focus-visible { opacity: 1; color: #315efb; }
 
 /* ================= 任务流程 ================= */
 .mode-groups { display: flex; flex-direction: column; gap: 14px; }
@@ -393,9 +505,14 @@ p, li { text-wrap: pretty; }
   .mode-group { grid-template-columns: 1fr; gap: 6px; }
   .mode-group__label { padding-top: 0; }
   .manual-point { flex-wrap: wrap; }
+  .task-main { flex-direction: column; gap: 10px; }
+  .task-main__index { flex-direction: row; align-items: baseline; gap: 8px; }
+  .route-progress__bar { width: 60px; }
+  .route-step__name { max-width: 72px; }
 }
 @media (pointer: coarse) {
   :root { --target-size: 44px; }
+  .route-row__jump.ant-btn:not(:disabled) { opacity: 1; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

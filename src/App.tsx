@@ -9,7 +9,6 @@ import {
   Card,
   Col,
   Descriptions,
-  Divider,
   Drawer,
   Empty,
   Form,
@@ -50,6 +49,7 @@ import {
   PauseCircleOutlined,
   PlayCircleOutlined,
   PoweroffOutlined,
+  QuestionCircleOutlined,
   ReloadOutlined,
   RobotOutlined,
   SearchOutlined,
@@ -129,6 +129,9 @@ const CONTROL_GROUPS: { title: string; description: string; items: ControlItem[]
   },
 ];
 
+/** 导航路线在卡片中最多直接显示的点位数 */
+const ROUTE_WINDOW = 7;
+
 const MODE_GROUPS: { key: 'explain' | 'guide' | 'unassigned'; label: string; color?: string; icon: ReactNode }[] = [
   { key: 'explain', label: '讲解', color: 'blue', icon: <NodeIndexOutlined /> },
   { key: 'guide', label: '带路', color: 'green', icon: <EnvironmentOutlined /> },
@@ -172,12 +175,6 @@ function routeProgressColor(progress: string): string {
   if (progress === 'completed') return '#52c41a';
   if (progress === 'active') return '#1677ff';
   return '#d9d9d9';
-}
-
-function routeProgressText(progress: string): string {
-  if (progress === 'completed') return '前序位置';
-  if (progress === 'active') return '当前位置';
-  return '待执行';
 }
 
 function genderLabel(gender: string): string {
@@ -243,9 +240,37 @@ function App() {
   const [previewingId, setPreviewingId] = useState<number | null>(null);
   const [bindingId, setBindingId] = useState<number | null>(null);
   const [showHiddenPoints, setShowHiddenPoints] = useState(true);
+  const [routeKeyword, setRouteKeyword] = useState('');
+  const [routeFilter, setRouteFilter] = useState<'all' | 'pending' | 'completed'>('all');
 
   const routePoints = useMemo(() => buildRoutePoints(snapshot, canControl), [snapshot, canControl]);
   const { task, innerTask } = getCurrentTasks(snapshot);
+  const routeStats = useMemo(() => {
+    const done = routePoints.filter((p) => p.progress === 'completed').length;
+    const pending = routePoints.length - done; // 含当前点位
+    const active = routePoints.some((p) => p.progress === 'active') ? 1 : 0;
+    const total = routePoints.length;
+    return { done, pending, percent: total ? Math.round(((done + active * 0.5) / total) * 100) : 0 };
+  }, [routePoints]);
+  // 路线窗口：点位多时只显示当前点位附近的 ROUTE_WINDOW 个
+  const routeWindow = useMemo(() => {
+    const total = routePoints.length;
+    if (total <= ROUTE_WINDOW) return { start: 0, end: total, items: routePoints };
+    const activeIdx = routePoints.findIndex((p) => p.progress === 'active');
+    const center = activeIdx >= 0 ? activeIdx : routeStats.done;
+    const start = Math.min(Math.max(center - 2, 0), total - ROUTE_WINDOW);
+    const end = start + ROUTE_WINDOW;
+    return { start, end, items: routePoints.slice(start, end) };
+  }, [routePoints, routeStats.done]);
+  const filteredRoutePoints = useMemo(() => {
+    const kw = routeKeyword.trim().toLowerCase();
+    return routePoints.filter((p) => {
+      if (routeFilter === 'pending' && p.progress === 'completed') return false;
+      if (routeFilter === 'completed' && p.progress !== 'completed') return false;
+      if (!kw) return true;
+      return p.name.toLowerCase().includes(kw) || p.point.toLowerCase().includes(kw);
+    });
+  }, [routePoints, routeKeyword, routeFilter]);
   const socketPreview = useMemo(() => {
     try {
       return buildWebSocketUrl(config);
@@ -683,116 +708,152 @@ function App() {
               {/* ============ 左列：任务进度 + 任务流程 + 直达导航 ============ */}
               <Col xs={24} xl={16}>
                 <div className="panel-stack">
-                  {/* 当前任务 + 轨迹：并排 */}
-                  <Row gutter={[16, 16]}>
-                    <Col xs={24} lg={10}>
-                      <Card
-                        className="fill-card"
-                        title={<Space><NodeIndexOutlined /> 当前任务</Space>}
-                        extra={snapshot && <Tag color={statusTagColor(snapshot.taskState.status)}>{statusLabel(snapshot.taskState.status)}</Tag>}
-                      >
-                        {snapshot && task ? (
-                          <div>
-                            <Space align="start" size={16} style={{ width: '100%' }}>
-                              <Statistic
-                                title="主任务"
-                                value={`${String(snapshot.taskState.taskIndex + 1).padStart(2, '0')} / ${String(snapshot.command?.tasks.length ?? 0).padStart(2, '0')}`}
-                                styles={{ content: { color: '#315efb', fontSize: 26, fontWeight: 500 } }}
-                              />
-                              <Space orientation="vertical" size={4} style={{ minWidth: 0 }}>
-                                <Tag>{taskTypeLabel(task)}</Tag>
-                                <Text strong className="clamp-2">{taskDisplayName(task)}</Text>
-                              </Space>
-                            </Space>
-                            {innerTask && (
-                              <div className="inner-task">
-                                <ThunderboltOutlined style={{ color: '#52c41a' }} />
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                  <Text type="secondary" style={{ fontSize: 11 }}>
-                                    子任务 {snapshot.taskState.innerTaskIndex + 1} · {taskTypeLabel(innerTask)}
-                                  </Text>
-                                  <div><Text strong className="clamp-2" style={{ fontSize: 13 }}>{taskDisplayName(innerTask)}</Text></div>
-                                </div>
-                                <Tag color={statusTagColor(snapshot.taskState.innerTaskStatus ?? '')}>
-                                  {statusLabel(snapshot.taskState.innerTaskStatus)}
-                                </Tag>
-                              </div>
-                            )}
-                          </div>
+                  {/* 任务进度：当前任务（上）+ 导航路线（下），合并为一张整宽卡片 */}
+                  <Card
+                    className="progress-card"
+                    title={
+                      <Space size={8}>
+                        <NodeIndexOutlined />
+                        {snapshot?.command ? (
+                          <Tooltip title="点击查看完整任务流程">
+                            <span className="progress-card__flow" onClick={() => setFlowModalOpen(true)}>
+                              {flowName}
+                            </span>
+                          </Tooltip>
                         ) : (
-                          <Empty
-                            image={Empty.PRESENTED_IMAGE_SIMPLE}
-                            description={snapshot ? '设备空闲，可发起任务流程、对话或直达导航。' : '连接成功后会自动获取当前任务。'}
-                          />
+                          <span>任务进度</span>
                         )}
-                      </Card>
-                    </Col>
+                        {snapshot?.command && (
+                          <Tag style={{ margin: 0 }}>{snapshot.command.tasks.length} 步</Tag>
+                        )}
+                      </Space>
+                    }
+                    extra={snapshot && <Tag color={statusTagColor(snapshot.taskState.status)} style={{ margin: 0 }}>{statusLabel(snapshot.taskState.status)}</Tag>}
+                  >
+                    {snapshot && task ? (
+                      <div className="progress-body">
+                        {/* 主任务 */}
+                        <div className="task-main">
+                          <div className="task-main__index">
+                            <span className="task-main__label">主任务</span>
+                            <span className="task-main__value">
+                              {String(snapshot.taskState.taskIndex + 1).padStart(2, '0')}
+                              <small> / {String(snapshot.command?.tasks.length ?? 0).padStart(2, '0')}</small>
+                            </span>
+                          </div>
+                          <div className="task-main__body">
+                            <Tag color="blue" style={{ margin: 0 }}>{taskTypeLabel(task)}</Tag>
+                            <Paragraph
+                              key={`main-${snapshot.taskState.taskIndex}`}
+                              className="task-text task-text--main"
+                              ellipsis={{ rows: 2, expandable: 'collapsible', symbol: (expanded: boolean) => (expanded ? '收起' : '展开') }}
+                            >
+                              {taskDisplayName(task)}
+                            </Paragraph>
+                          </div>
+                        </div>
 
-                    <Col xs={24} lg={14}>
-                      <Card
-                        className="fill-card"
-                        title={
-                          <Space
-                            style={{ cursor: snapshot?.command ? 'pointer' : 'default', color: snapshot?.command ? '#1677ff' : undefined }}
-                            onClick={() => snapshot?.command && setFlowModalOpen(true)}
-                          >
-                            <EnvironmentOutlined />
-                            <Tooltip title={snapshot?.command ? '点击查看完整任务流程' : ''}>
-                              <span>{snapshot?.command ? flowName : '轨迹预览'}</span>
-                            </Tooltip>
-                            {snapshot?.command && (
-                              <Tag style={{ fontSize: 10, margin: 0, lineHeight: '16px' }}>
-                                {snapshot.command.tasks.length} 步
+                        {/* 子任务 */}
+                        {innerTask && (
+                          <div className="inner-task">
+                            <div className="inner-task__head">
+                              <Space size={6}>
+                                <ThunderboltOutlined style={{ color: '#52c41a' }} />
+                                <Text type="secondary" style={{ fontSize: 12 }}>
+                                  子任务 {snapshot.taskState.innerTaskIndex + 1}
+                                  {task.inner_tasks?.length ? ` / ${task.inner_tasks.length}` : ''} · {taskTypeLabel(innerTask)}
+                                </Text>
+                              </Space>
+                              <Tag color={statusTagColor(snapshot.taskState.innerTaskStatus ?? '')} style={{ margin: 0 }}>
+                                {statusLabel(snapshot.taskState.innerTaskStatus)}
                               </Tag>
-                            )}
-                          </Space>
-                        }
-                        extra={
-                          routePoints.length > 0 && (
-                            <Button size="small" type="link" onClick={() => setPointsModalOpen(true)}>
-                              {routePoints.length} 个导航点
-                            </Button>
-                          )
-                        }
-                      >
-                        {routePoints.length ? (
-                          <div>
-                            <div className="route-steps">
-                              <Steps
-                                direction="horizontal"
-                                size="small"
-                                current={routePoints.findIndex((p) => p.progress === 'active')}
-                                items={routePoints.map((rp, idx) => ({
-                                  title: (
-                                    <Tooltip title={rp.canNavigate ? `跳转到 ${rp.name}` : rp.name}>
-                                      <span
-                                        style={{ cursor: rp.canNavigate ? 'pointer' : 'default', opacity: rp.canNavigate ? 1 : 0.6 }}
-                                        onClick={() => rp.canNavigate && requestJump(rp)}
-                                      >
-                                        {rp.name}
-                                      </span>
-                                    </Tooltip>
-                                  ),
-                                  description: routeProgressText(rp.progress),
-                                  status: rp.progress === 'completed' ? 'finish' : rp.progress === 'active' ? 'process' : 'wait',
-                                  icon: rp.progress === 'completed' ? <CheckOutlined /> : idx + 1,
-                                }))}
-                              />
                             </div>
-                            <Divider style={{ margin: '8px 0' }} />
-                            <Text type="secondary" style={{ fontSize: 11 }}>
-                              点击可用点位可跳转 · 暂停时需先继续任务
-                            </Text>
+                            <Paragraph
+                              key={`inner-${snapshot.taskState.taskIndex}-${snapshot.taskState.innerTaskIndex}`}
+                              className="task-text"
+                              ellipsis={{ rows: 3, expandable: 'collapsible', symbol: (expanded: boolean) => (expanded ? '收起' : '展开全文') }}
+                            >
+                              {taskDisplayName(innerTask)}
+                            </Paragraph>
                           </div>
-                        ) : (
-                          <Empty
-                            image={Empty.PRESENTED_IMAGE_SIMPLE}
-                            description={snapshot?.command ? '任务树中没有满足显示条件的根导航任务。' : '执行带导航的任务流程时，这里会显示路线进度。'}
-                          />
                         )}
-                      </Card>
-                    </Col>
-                  </Row>
+                      </div>
+                    ) : (
+                      <Empty
+                        image={Empty.PRESENTED_IMAGE_SIMPLE}
+                        description={snapshot ? '设备空闲，可发起任务流程、对话或直达导航。' : '连接成功后会自动获取当前任务。'}
+                      />
+                    )}
+
+                    {/* 导航路线：只显示当前点位附近的窗口，完整列表在抽屉中查看 */}
+                    {routePoints.length > 0 && (
+                      <div className="route-section">
+                        <div className="route-section__head">
+                          <Space size={8} align="center">
+                            <EnvironmentOutlined style={{ color: '#66758c' }} />
+                            <Text strong style={{ fontSize: 13 }}>导航路线</Text>
+                            <span className="route-progress">
+                              <span className="route-progress__bar">
+                                <span style={{ width: `${routeStats.percent}%` }} />
+                              </span>
+                              <Text type="secondary" style={{ fontSize: 12 }}>
+                                {routeStats.done} / {routePoints.length}
+                              </Text>
+                            </span>
+                            <Tooltip title="点击可跳转的点位即可跳到该导航步骤；流程暂停时需先继续任务">
+                              <QuestionCircleOutlined className="route-section__help" />
+                            </Tooltip>
+                          </Space>
+                          {routePoints.length > ROUTE_WINDOW && (
+                            <Button size="small" type="link" onClick={() => setPointsModalOpen(true)}>
+                              查看全部
+                            </Button>
+                          )}
+                        </div>
+                        <div className="route-rail">
+                          {routeWindow.start > 0 && (
+                            <button type="button" className="route-more" onClick={() => setPointsModalOpen(true)}>
+                              前 {routeWindow.start} 个
+                            </button>
+                          )}
+                          <Steps
+                            className="route-rail__steps"
+                            direction="horizontal"
+                            size="small"
+                            initial={routeWindow.start}
+                            current={Math.max(routePoints.findIndex((p) => p.progress === 'active'), routeWindow.start)}
+                            items={routeWindow.items.map((rp) => {
+                              return {
+                                title: (
+                                  <Tooltip title={rp.canNavigate ? `跳转到 ${rp.name}` : rp.name}>
+                                    <span
+                                      className={`route-step__name${rp.canNavigate ? ' route-step__name--link' : ''}`}
+                                      onClick={() => rp.canNavigate && requestJump(rp)}
+                                    >
+                                      {rp.name}
+                                    </span>
+                                  </Tooltip>
+                                ),
+                                status: rp.progress === 'completed' ? 'finish' : rp.progress === 'active' ? 'process' : 'wait',
+                              };
+                            })}
+                          />
+                          {routeWindow.end < routePoints.length && (
+                            <button type="button" className="route-more" onClick={() => setPointsModalOpen(true)}>
+                              后 {routePoints.length - routeWindow.end} 个
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    {snapshot?.command && routePoints.length === 0 && (
+                      <div className="route-section route-section--empty">
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          <EnvironmentOutlined /> 当前流程没有可展示的导航路线
+                        </Text>
+                      </div>
+                    )}
+                  </Card>
 
                   {/* 任务流程 */}
                   <Card
@@ -1231,59 +1292,87 @@ function App() {
         )}
       </Drawer>
 
-      {/* 全部点位弹窗 */}
-      <Modal
-        title={flowName}
+      {/* 导航路线抽屉 */}
+      <Drawer
+        title={
+          <Space size={8}>
+            <EnvironmentOutlined />
+            <span>导航路线</span>
+            <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
+              已完成 {routeStats.done} / {routePoints.length}
+            </Text>
+          </Space>
+        }
         open={pointsModalOpen}
-        onCancel={() => setPointsModalOpen(false)}
-        footer={null}
-        width={600}
+        onClose={() => setPointsModalOpen(false)}
+        size={460}
+        afterOpenChange={(open) => {
+          if (open) document.querySelector('.route-row--active')?.scrollIntoView({ block: 'center' });
+        }}
       >
-        <Paragraph type="secondary" style={{ fontSize: 12 }}>
-          轨迹顺序与原始根任务数组一致；序号对应可见轨迹点，跳转使用节点的 step_id。
-        </Paragraph>
-        <List
-          dataSource={routePoints}
-          renderItem={(rp, index) => (
-            <List.Item
-              actions={[
-                <Button
-                  key="jump"
-                  size="small"
-                  disabled={!rp.canNavigate}
-                  onClick={() => { requestJump(rp); setPointsModalOpen(false); }}
-                >
-                  跳转
-                </Button>,
+        <div className="route-drawer">
+          <div className="route-drawer__tools">
+            <Input
+              allowClear
+              size="small"
+              prefix={<SearchOutlined />}
+              placeholder="搜索点位名称 / 点位值"
+              value={routeKeyword}
+              onChange={(e) => setRouteKeyword(e.target.value)}
+            />
+            <Segmented
+              size="small"
+              block
+              value={routeFilter}
+              onChange={(v) => setRouteFilter(v as typeof routeFilter)}
+              options={[
+                { label: `全部 ${routePoints.length}`, value: 'all' },
+                { label: `待执行 ${routeStats.pending}`, value: 'pending' },
+                { label: `已完成 ${routeStats.done}`, value: 'completed' },
               ]}
-            >
-              <List.Item.Meta
-                avatar={
-                  <Avatar
-                    size={32}
-                    shape="circle"
-                    icon={rp.progress === 'completed' ? <CheckOutlined /> : index + 1}
-                    style={{
-                      background: routeProgressColor(rp.progress),
-                      color: rp.progress === 'pending' ? '#8c8c8c' : '#fff',
-                      fontSize: 12,
-                      fontWeight: 600,
-                    }}
-                  />
-                }
-                title={rp.name}
-                description={
-                  <Space>
-                    <Text type="secondary" style={{ fontSize: 11 }}>主任务 {rp.rootIndex + 1}</Text>
-                    <Text type="secondary" style={{ fontSize: 11 }}>step_id {rp.stepId}</Text>
-                    <Tag style={{ fontSize: 10 }}>{routeProgressText(rp.progress)}</Tag>
-                  </Space>
-                }
-              />
-            </List.Item>
+            />
+            <Text type="secondary" style={{ fontSize: 11 }}>
+              {snapshot?.buttons.pauseTask ? '点击「跳转」从该步骤重新派发后续任务' : '流程未在运行（或已暂停），暂不可跳转'}
+            </Text>
+          </div>
+
+          {filteredRoutePoints.length ? (
+            <div className="route-list">
+              {filteredRoutePoints.map((rp) => {
+                const globalIdx = routePoints.indexOf(rp);
+                return (
+                  <div key={rp.key} className={`route-row route-row--${rp.progress}`}>
+                    <span className="route-row__dot" style={{ background: routeProgressColor(rp.progress) }}>
+                      {rp.progress === 'completed' ? <CheckOutlined /> : globalIdx + 1}
+                    </span>
+                    <div className="route-row__body">
+                      <div className="route-row__name ellipsis" title={rp.name}>{rp.name}</div>
+                      <div className="route-row__meta ellipsis">
+                        {rp.point || '—'} · 步骤 {rp.stepId}
+                      </div>
+                    </div>
+                    {rp.progress === 'active' ? (
+                      <Tag color="blue" style={{ margin: 0 }}>当前</Tag>
+                    ) : (
+                      <Button
+                        size="small"
+                        type="text"
+                        className="route-row__jump"
+                        disabled={!rp.canNavigate}
+                        onClick={() => { setPointsModalOpen(false); requestJump(rp); }}
+                      >
+                        跳转
+                      </Button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有匹配的点位" />
           )}
-        />
-      </Modal>
+        </div>
+      </Drawer>
 
       {/* 任务流程详情弹窗 */}
       <Modal
