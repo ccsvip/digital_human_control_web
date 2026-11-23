@@ -132,7 +132,7 @@ p, li { text-wrap: pretty; }
 .status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .connection-pill--connected { color: #238562; border-color: #cde9dd; background: #f0faf5; }
 .connection-pill--connecting, .connection-pill--reconnecting { color: #315efb; border-color: #dce4ff; background: #f3f6ff; }
-.console-content { width: 100%; max-width: 1640px; margin: 0 auto; padding: 28px 36px 20px; }
+.console-content { width: 100%; max-width: 1920px; margin: 0 auto; padding: 28px 36px 20px; }
 .console-content .ant-card {
   border-color: #e7ebf2;
   border-radius: 12px;
@@ -628,4 +628,34 @@ p, li { text-wrap: pretty; }
 .resource-list {
   max-height: 260px;
   overflow-y: auto;
+}
+
+/* 信息区：四张卡片等高，内容超出时卡片内滚动 */
+.info-grid {
+  margin-top: 16px;
+}
+
+.info-grid > .ant-col {
+  display: flex;
+}
+
+.info-grid > .ant-col > .ant-card {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.info-grid > .ant-col > .ant-card > .ant-card-body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.info-grid .chat-test-list,
+.info-grid .resource-list {
+  max-height: 320px;
+}
+
+.info-grid .voice-grid {
+  max-height: 320px;
 }
