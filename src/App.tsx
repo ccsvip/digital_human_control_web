@@ -355,33 +355,18 @@ function App() {
   return (
     <AntApp>
       {contextHolder}
-      <Layout style={{ minHeight: '100vh' }}>
+      <Layout className="console-shell">
         {/* 左侧连接配置面板 */}
-        <Sider
-          width={320}
-          theme="light"
-          style={{
-            overflow: 'auto',
-            height: '100vh',
-            position: 'sticky',
-            top: 0,
-            borderRight: '1px solid #f0f0f0',
-          }}
-        >
-          <div style={{ padding: '24px 20px' }}>
-            <Space direction="vertical" size="large" style={{ width: '100%' }}>
+        <Sider width={300} theme="light" className="console-sidebar">
+          <div className="console-sidebar__inner">
+            <Space orientation="vertical" size="large" style={{ width: '100%' }}>
               {/* 品牌区域 */}
               <div>
                 <Space align="center" size={12}>
-                  <Avatar
-                    size={40}
-                    shape="square"
-                    icon={<RobotOutlined />}
-                    style={{ background: 'linear-gradient(135deg, #1677ff, #0958d9)', borderRadius: 10 }}
-                  />
+                  <div className="brand-mark" aria-hidden="true"><RobotOutlined /></div>
                   <div>
                     <Title level={5} style={{ margin: 0 }}>数字人控制台</Title>
-                    <Text type="secondary" style={{ fontSize: 11 }}>DIGITAL HUMAN / OPS</Text>
+                    <Text className="brand-caption">DIGITAL HUMAN / OPS</Text>
                   </div>
                 </Space>
               </div>
@@ -423,26 +408,28 @@ function App() {
                   </Form.Item>
 
                   <Form.Item label="设备号">
-                    <Input.Search
+                    <Input
                       prefix={<RobotOutlined />}
                       type={showDeviceCode ? 'text' : 'password'}
                       value={config.deviceCode}
                       onChange={(e) => updateConfig('deviceCode', e.target.value)}
                       placeholder="输入设备码"
+                      aria-label="设备号"
                       autoComplete="off"
-                      enterButton={false}
                       suffix={
                         <Space size={2}>
                           <Button
                             type="text"
                             size="small"
                             icon={showDeviceCode ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+                            aria-label={showDeviceCode ? '隐藏设备号' : '显示设备号'}
                             onClick={() => setShowDeviceCode((v) => !v)}
                           />
                           <Button
                             type="text"
                             size="small"
                             icon={<CopyOutlined />}
+                            aria-label="复制设备号"
                             onClick={copyDeviceCode}
                           />
                         </Space>
@@ -452,12 +439,12 @@ function App() {
                 </Form>
 
                 {/* WebSocket 端点预览 */}
-                <Card size="small" style={{ marginBottom: 12, background: '#fafafa' }}>
-                  <Text type="secondary" style={{ fontSize: 11 }}>WebSocket 端点</Text>
-                  <Paragraph style={{ margin: '4px 0 0' }} ellipsis={{ tooltip: socketPreview }}>
-                    <Text code style={{ fontSize: 11 }}>{socketPreview}</Text>
+                <div className="endpoint-preview">
+                  <Text type="secondary">WebSocket 端点</Text>
+                  <Paragraph ellipsis={{ tooltip: socketPreview }}>
+                    <Text code>{socketPreview}</Text>
                   </Paragraph>
-                </Card>
+                </div>
 
                 {configDirty && isActive && (
                   <div style={{ marginBottom: 12 }}>
@@ -467,7 +454,7 @@ function App() {
                   </div>
                 )}
 
-                <Space direction="vertical" style={{ width: '100%' }}>
+                <Space orientation="vertical" style={{ width: '100%' }}>
                   {(!isActive || configDirty) && (
                     <Button
                       type="primary"
@@ -492,12 +479,12 @@ function App() {
               </div>
 
               {/* 状态摘要 */}
-              <Card size="small">
+              <div className="connection-summary">
                 <Descriptions
                   column={1}
                   size="small"
                   colon={false}
-                  labelStyle={{ color: 'rgba(0,0,0,0.45)' }}
+                  styles={{ label: { color: 'rgba(0,0,0,0.45)' } }}
                   items={[
                     {
                       key: 'channel',
@@ -516,43 +503,32 @@ function App() {
                     },
                   ]}
                 />
-              </Card>
+              </div>
 
-              <div>
-                <Space align="start" size={8}>
-                  <WarningOutlined style={{ color: '#8c8c8c', marginTop: 2 }} />
-                  <Text type="secondary" style={{ fontSize: 12, lineHeight: 1.6 }}>
-                    控制动作不做本地成功预判，以设备最新完整快照为准。
-                  </Text>
-                </Space>
+              <div className="sidebar-note">
+                <WarningOutlined aria-hidden="true" />
+                <Text type="secondary">
+                  控制动作不做本地成功预判，以设备最新完整快照为准。
+                </Text>
               </div>
             </Space>
           </div>
         </Sider>
 
         {/* 主内容区 */}
-        <Layout>
-          <Header style={{
-            background: '#fff',
-            borderBottom: '1px solid #f0f0f0',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '0 32px',
-            height: 72,
-          }}>
-            <div>
-              <Text type="secondary" style={{ fontSize: 11, letterSpacing: 1 }}>OPERATIONS CONSOLE</Text>
-              <Title level={4} style={{ margin: '2px 0 0' }}>任务与设备控制</Title>
+        <div className="console-workspace">
+          <Header className="console-header">
+            <div className="console-header__title">
+              <Text className="eyebrow">OPERATIONS CONSOLE</Text>
+              <Title level={3}>任务与设备控制</Title>
+              <Text type="secondary">在一个工作台中掌握任务进度与设备状态</Text>
             </div>
-            <Space size="middle">
-              <Tag icon={<CodeOutlined />} color="blue">协议 v1.23</Tag>
-              <Tag
-                color={CONNECTION_COLORS[status]}
-                icon={status === 'connecting' || status === 'reconnecting' ? <LoadingOutlined /> : status === 'connected' ? <LinkOutlined /> : <DisconnectOutlined />}
-              >
+            <div className="console-header__actions">
+              <span className="protocol-label"><CodeOutlined /> 协议 v1.23</span>
+              <span className={`connection-pill connection-pill--${status}`}>
+                {status === 'connecting' || status === 'reconnecting' ? <LoadingOutlined /> : <span className="status-dot" />}
                 {CONNECTION_LABELS[status]}
-              </Tag>
+              </span>
               <Button
                 icon={isQuerying ? <LoadingOutlined /> : <ReloadOutlined />}
                 onClick={controller.requestState}
@@ -560,14 +536,14 @@ function App() {
               >
                 {isQuerying ? '获取中' : '刷新状态'}
               </Button>
-            </Space>
+            </div>
           </Header>
 
-          <Content style={{ padding: '24px 32px', maxWidth: 1600, margin: '0 auto', width: '100%' }}>
+          <Content className="console-content">
             {/* 错误提示 */}
             {error && (
               <Alert
-                message={error}
+                title={error}
                 type="error"
                 showIcon
                 closable
@@ -577,62 +553,49 @@ function App() {
             )}
 
             {/* 设备信息横幅 */}
-            <Card style={{ marginBottom: 16, background: 'linear-gradient(135deg, #1677ff 0%, #0958d9 100%)', border: 'none' }}>
-              <Row gutter={24} align="middle">
+            <Card className="device-overview">
+              <Row gutter={[24, 20]} align="middle">
                 <Col flex="auto">
-                  <Space size="large" align="center">
-                    <Avatar
-                      size={56}
-                      shape="square"
-                      icon={<RobotOutlined />}
-                      style={{ background: 'rgba(255,255,255,0.15)', borderRadius: 14, fontSize: 28 }}
-                    />
+                  <Space size={16} align="center">
+                    <div className="device-overview__icon" aria-hidden="true"><RobotOutlined /></div>
                     <div>
-                      <Space size={8}>
-                        <Badge
-                          status={screenOnline === true ? 'success' : screenOnline === false ? 'error' : 'default'}
-                          text={<Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12 }}>设备 {deviceStatus}</Text>}
-                        />
-                      </Space>
-                      <Title level={4} style={{ color: '#fff', margin: '4px 0' }}>
+                      <Badge
+                        status={screenOnline === true ? 'success' : screenOnline === false ? 'error' : 'default'}
+                        text={<Text type="secondary">设备 {deviceStatus}</Text>}
+                      />
+                      <Title level={4}>
                         {snapshot?.deviceInfo.deviceName || '尚未获取设备信息'}
                       </Title>
-                      <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12 }}>
+                      <Text type="secondary">
                         {snapshot ? '设备完整状态已同步' : '连接服务器后，将在此展示数字人与机器人状态'}
                       </Text>
                     </div>
                   </Space>
                 </Col>
-                <Col flex="none">
-                  <Row gutter={32}>
+                <Col flex="none" className="device-metrics">
+                  <Row gutter={[28, 16]}>
                     <Col>
                       <Statistic
-                        title={<span style={{ color: 'rgba(255,255,255,0.6)' }}>机器人</span>}
+                        title="机器人"
                         value={snapshot ? (snapshot.deviceInfo.robotConnected ? '已连接' : '未连接') : '—'}
-                        valueStyle={{ color: '#fff', fontSize: 18 }}
                       />
-                      <Text style={{ color: snapshot && !snapshot.deviceInfo.robotNormal ? '#ffccc7' : 'rgba(255,255,255,0.5)', fontSize: 11 }}>
+                      <Text type={snapshot && !snapshot.deviceInfo.robotNormal ? 'danger' : 'secondary'}>
                         {snapshot ? (snapshot.deviceInfo.robotNormal ? '运行正常' : snapshot.deviceInfo.robotErrorMessage || '状态异常') : '等待状态'}
                       </Text>
                     </Col>
                     <Col>
                       <Statistic
-                        title={<span style={{ color: 'rgba(255,255,255,0.6)' }}>电池电量</span>}
+                        title="电池电量"
                         value={battery ?? '—'}
                         suffix={battery != null ? '%' : ''}
-                        valueStyle={{ color: '#fff', fontSize: 18 }}
                       />
-                      <Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 11 }}>
+                      <Text type="secondary">
                         {snapshot?.deviceInfo.robotCharging ? <><BatteryChargingIcon /> 正在充电</> : snapshot ? '未在充电' : '等待状态'}
                       </Text>
                     </Col>
                     <Col>
-                      <Statistic
-                        title={<span style={{ color: 'rgba(255,255,255,0.6)' }}>机器人 IP</span>}
-                        value={snapshot?.deviceInfo.robotIp || '—'}
-                        valueStyle={{ color: '#fff', fontSize: 14 }}
-                      />
-                      <Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 11 }}>
+                      <Statistic title="机器人 IP" value={snapshot?.deviceInfo.robotIp || '—'} />
+                      <Text type="secondary">
                         {snapshot?.deviceInfo.robotConnected ? '网络已关联' : '等待连接'}
                       </Text>
                     </Col>
@@ -644,7 +607,7 @@ function App() {
             {/* 主内容网格 */}
             <Row gutter={16}>
               {/* 左列：当前任务 + 轨迹预览 */}
-              <Col xs={24} lg={16}>
+              <Col xs={24} xl={16}>
                 {/* 当前任务 */}
                 <Card title={<Space><NodeIndexOutlined /> 当前任务</Space>} extra={
                   snapshot && <Tag color={statusTagColor(snapshot.taskState.status)}>{statusLabel(snapshot.taskState.status)}</Tag>
@@ -656,11 +619,11 @@ function App() {
                           <Statistic
                             title="主任务"
                             value={`${String(snapshot.taskState.taskIndex + 1).padStart(2, '0')} / ${String(snapshot.command?.tasks.length ?? 0).padStart(2, '0')}`}
-                            valueStyle={{ color: '#1677ff', fontSize: 28, fontWeight: 500 }}
+                            styles={{ content: { color: '#315efb', fontSize: 28, fontWeight: 500 } }}
                           />
                         </Col>
                         <Col flex="auto">
-                          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                          <Space orientation="vertical" size={4} style={{ width: '100%' }}>
                             <Tag>{taskTypeLabel(task)}</Tag>
                             <Title level={5} style={{ margin: 0, flex: 1, minWidth: 0 }}>
                               {taskDisplayName(task)}
@@ -791,6 +754,7 @@ function App() {
                         size="small"
                         type="text"
                         icon={taskModesLoading ? <LoadingOutlined /> : <ReloadOutlined />}
+                        aria-label="刷新任务流程"
                         onClick={controller.fetchTaskModes}
                         disabled={status !== 'connected'}
                       />
@@ -800,7 +764,7 @@ function App() {
                 >
                   {taskModes ? (
                     (taskModes.guide.length > 0 || taskModes.explain.length > 0 || taskModes.unassigned.length > 0) ? (
-                      <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                      <Space orientation="vertical" style={{ width: '100%' }} size="middle">
                         {taskModes.explain.length > 0 && (
                           <div>
                             <div style={{ marginBottom: 6 }}>
@@ -941,7 +905,7 @@ function App() {
               </Col>
 
               {/* 右列：控制动作 + 文本提问 + 直达导航 */}
-              <Col xs={24} lg={8}>
+              <Col xs={24} xl={8}>
                 {/* 控制动作 */}
                 <Card
                   title={<Space><ThunderboltOutlined /> 控制动作</Space>}
@@ -1023,6 +987,7 @@ function App() {
                           size="small"
                           type="text"
                           icon={pointGroupLoading ? <LoadingOutlined /> : <ReloadOutlined />}
+                          aria-label="刷新点位"
                           onClick={controller.fetchPoints}
                           disabled={status !== 'connected'}
                         />
@@ -1105,7 +1070,7 @@ function App() {
                       <Alert
                         type="info"
                         showIcon
-                        message={pointGroup ? '点位分组为空' : '尚未获取点位分组'}
+                        title={pointGroup ? '点位分组为空' : '尚未获取点位分组'}
                         description={
                           pointGroup
                             ? '设备绑定的点位分组中没有点位。'
@@ -1145,6 +1110,7 @@ function App() {
                         size="small"
                         type="text"
                         icon={voiceLoading ? <LoadingOutlined /> : <ReloadOutlined />}
+                        aria-label="刷新音色"
                         onClick={controller.fetchVoices}
                         disabled={status !== 'connected'}
                       />
@@ -1236,7 +1202,7 @@ function App() {
                                   </Space>
                                 }
                                 description={
-                                  <Space direction="vertical" size={0} style={{ width: '100%' }}>
+                                  <Space orientation="vertical" size={0} style={{ width: '100%' }}>
                                     <Text type="secondary" style={{ fontSize: 11 }}>
                                       {vt.voiceCode} · 语速 {vt.speechRate}
                                     </Text>
@@ -1287,7 +1253,7 @@ function App() {
                     onConfirm={controller.clearLogs}
                     disabled={!logs.length}
                   >
-                    <Button size="small" danger icon={<CloseOutlined />} disabled={!logs.length} />
+                    <Button size="small" danger icon={<CloseOutlined />} aria-label="清空所有报文" disabled={!logs.length} />
                   </Popconfirm>
                 </Space>
               }
@@ -1362,7 +1328,7 @@ function App() {
               </Space>
             </div>
           </Content>
-        </Layout>
+        </div>
       </Layout>
 
       {/* 全部点位弹窗 */}

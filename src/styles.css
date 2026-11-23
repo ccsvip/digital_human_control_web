@@ -1,60 +1,212 @@
-/* 全局基础样式 - Ant Design 组件库接管主要样式 */
-
-html {
-  min-width: 320px;
-}
-
-body {
-  margin: 0;
-  min-width: 320px;
-  min-height: 100vh;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue',
-    Arial, 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+/* 数字人工作台：保持控制密度，同时建立清晰的视觉层级。 */
+:root {
+  font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC',
+    'Microsoft YaHei', sans-serif;
+  color: #182235;
+  background: #f4f6fa;
+  font-synthesis: none;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  --target-size: 24px;
 }
 
-#root {
-  min-height: 100vh;
+* { box-sizing: border-box; }
+html { min-width: 320px; }
+body { margin: 0; min-width: 320px; min-height: 100vh; overflow-wrap: break-word; }
+button, input, textarea { font: inherit; }
+h1, h2, h3 { text-wrap: balance; }
+p, li { text-wrap: pretty; }
+#root { min-height: 100vh; }
+:where(a, code) { overflow-wrap: anywhere; }
+:where(button, [role='button'], input, select, textarea) {
+  min-block-size: var(--target-size);
+}
+:where(button, [role='button']):focus-visible,
+:where(a, input, textarea):focus-visible {
+  outline: 2px solid #315efb;
+  outline-offset: 3px;
 }
 
-/* 滚动条样式 */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #ccd3df; border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: #a9b4c5; }
 
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background: #d9d9d9;
-  border-radius: 3px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: #bfbfbf;
-}
-
-/* Ant Design Layout 背景修正 */
-.ant-layout {
-  background: #f5f5f5;
-}
-
-.ant-layout-content {
-  background: #f5f5f5;
-}
-
-/* Sider 滚动条 */
-.ant-layout-sider {
+.console-shell.ant-layout,
+.console-workspace,
+.console-content.ant-layout-content { background: #f4f6fa; }
+.console-shell { min-height: 100vh; min-height: 100dvh; }
+.console-workspace { flex: 1 1 auto; min-width: 0; }
+.console-sidebar.ant-layout-sider {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  height: 100dvh;
+  overflow: auto;
+  border-right: 1px solid #e7ebf2;
+  background: #fff;
   scrollbar-width: thin;
+  z-index: 2;
 }
+.console-sidebar__inner { padding: 28px 22px; }
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  border-radius: 12px;
+  color: #fff;
+  background: #315efb;
+  box-shadow: 0 5px 14px rgba(49, 94, 251, 0.2);
+  font-size: 21px;
+}
+.brand-caption.ant-typography {
+  display: block;
+  margin-top: 3px;
+  color: #8b96a8;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 1.4px;
+}
+.endpoint-preview {
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid #edf0f5;
+  border-radius: 8px;
+  background: #f8f9fc;
+}
+.endpoint-preview > .ant-typography { font-size: 11px; }
+.endpoint-preview .ant-typography-ellipsis { margin: 5px 0 0; }
+.endpoint-preview code { padding: 0; border: 0; background: transparent; font-size: 10px; }
+.connection-summary {
+  padding: 16px;
+  border: 1px solid #e9edf4;
+  border-radius: 10px;
+  background: #fbfcfe;
+}
+.connection-summary .ant-descriptions-item { padding-bottom: 10px; }
+.connection-summary .ant-descriptions-row:last-child > .ant-descriptions-item { padding-bottom: 0; }
+.sidebar-note { display: flex; align-items: flex-start; gap: 8px; color: #8a94a6; }
+.sidebar-note > .anticon { margin-top: 4px; }
+.sidebar-note > .ant-typography { font-size: 11px; line-height: 1.7; }
 
+.console-header.ant-layout-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  min-height: 106px;
+  height: auto;
+  line-height: 1.5;
+  padding: 24px 36px;
+  border-bottom: 1px solid #e7ebf2;
+  background: rgba(255, 255, 255, 0.96);
+}
+.console-header__title { min-width: 0; }
+.console-header__title .eyebrow.ant-typography {
+  display: block;
+  margin-bottom: 5px;
+  color: #315efb;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1.6px;
+}
+.console-header__title h3.ant-typography { margin: 0 0 4px; font-size: 23px; letter-spacing: -0.4px; }
+.console-header__title > .ant-typography:last-child { font-size: 12px; }
+.console-header__actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 12px; }
+.protocol-label { display: inline-flex; align-items: center; gap: 6px; color: #7a879a; font-size: 11px; }
+.connection-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  padding: 3px 10px;
+  border: 1px solid #e4e8f0;
+  border-radius: 20px;
+  color: #6c788a;
+  background: #f8f9fb;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.connection-pill--connected { color: #238562; border-color: #cde9dd; background: #f0faf5; }
+.connection-pill--connecting, .connection-pill--reconnecting { color: #315efb; border-color: #dce4ff; background: #f3f6ff; }
+.console-content { width: 100%; max-width: 1640px; margin: 0 auto; padding: 28px 36px 20px; }
+.console-content .ant-card {
+  border-color: #e7ebf2;
+  border-radius: 12px;
+  box-shadow: 0 2px 5px rgba(25, 42, 70, 0.025);
+}
+.console-content .ant-card-head { min-height: 54px; border-bottom-color: #edf0f5; }
+.console-content .ant-card-head-title { font-weight: 600; }
+.console-content .ant-card-head-title .anticon { color: #66758c; }
+.console-content .ant-btn { transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease; }
+.console-content .ant-btn-default:not(:disabled):hover { border-color: #a9baf4; color: #315efb; background: #f7f9ff; }
+.console-content .ant-empty { padding-block: 20px; }
+.console-content .ant-empty-description { color: #8a94a5; font-size: 12px; line-height: 1.8; }
+
+.device-overview.ant-card {
+  margin-bottom: 20px;
+  border-top: 2px solid #315efb;
+  background: linear-gradient(110deg, #fff 50%, #f7f9ff 100%);
+}
+.device-overview .ant-card-body { padding: 22px 24px; }
+.device-overview__icon {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  flex: 0 0 52px;
+  border: 1px solid #dfe6ff;
+  border-radius: 13px;
+  color: #315efb;
+  background: #f0f4ff;
+  font-size: 25px;
+}
+.device-overview h4.ant-typography { margin: 4px 0; font-size: 18px; }
+.device-overview .ant-typography { font-size: 12px; }
+.device-overview .ant-badge-status-text { margin-inline-start: 6px; }
+.device-metrics .ant-statistic-title { margin-bottom: 4px; font-size: 11px; }
+.device-metrics .ant-statistic-content { font-size: 20px; font-weight: 600; color: #25334a; }
+.device-metrics .ant-statistic-content-suffix { font-size: 12px; font-weight: 400; }
+.device-metrics .ant-col:last-child .ant-statistic-content { font-size: 15px; }
+.device-metrics .ant-statistic + .ant-typography { font-size: 10px; }
+
+@media (max-width: 1199px) {
+  .device-metrics { flex: 0 0 100%; max-width: 100%; padding-top: 16px; border-top: 1px solid #edf0f5; }
+}
+@media (max-width: 991px) {
+  .console-shell.ant-layout { flex-direction: column; }
+  .console-workspace { flex: 0 0 auto; width: 100%; }
+  .console-sidebar.ant-layout-sider { position: relative; flex: 0 0 100% !important; width: 100% !important; max-width: 100% !important; min-width: 100% !important; height: auto; border-right: 0; border-bottom: 1px solid #e7ebf2; }
+  .console-sidebar__inner { padding: 22px 28px; }
+  .console-sidebar__inner > .ant-space { gap: 20px !important; }
+  .console-header.ant-layout-header { padding: 22px 28px; }
+  .console-content { padding: 24px 28px 18px; }
+}
+@media (max-width: 640px) {
+  .console-sidebar__inner { padding: 20px 18px; }
+  .console-header.ant-layout-header { align-items: flex-start; flex-direction: column; gap: 16px; padding: 20px 18px; }
+  .console-header__actions { justify-content: flex-start; width: 100%; gap: 9px; }
+  .console-header__title h3.ant-typography { font-size: 21px; }
+  .console-content { padding: 18px 14px; }
+  .console-content .ant-card-body { padding: 16px; }
+  .console-content .ant-card-head { padding-inline: 16px; }
+  .device-overview .ant-card-body { padding: 18px; }
+  .device-overview .ant-space-item:has(.device-overview__icon) { display: none; }
+  .console-content .ant-card-head-wrapper { align-items: flex-start; flex-wrap: wrap; gap: 8px; padding-block: 10px; }
+  .console-content .ant-card-head-wrapper > .ant-card-extra { padding-block: 0; margin-inline-start: 0; }
+  .console-content .ant-steps { flex-wrap: wrap; gap: 12px; }
+  .console-content .ant-steps-item { flex: 1 1 140px; }
+  .console-content .ant-card .ant-list-item { flex-wrap: wrap; gap: 10px; }
+  .console-content .ant-card .ant-list-item-action { margin-inline-start: 40px; }
+}
+@media (pointer: coarse) {
+  :root { --target-size: 44px; }
+}
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
+  *, *::before, *::after {
     scroll-behavior: auto !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
