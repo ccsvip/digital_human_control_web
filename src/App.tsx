@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import type { FormEvent } from 'react';
+import type { FormEvent, ReactElement, ReactNode } from 'react';
 import {
   Alert,
   App as AntApp,
@@ -8,9 +8,9 @@ import {
   Button,
   Card,
   Col,
-  Collapse,
   Descriptions,
   Divider,
+  Drawer,
   Empty,
   Form,
   Input,
@@ -52,7 +52,9 @@ import {
   PoweroffOutlined,
   ReloadOutlined,
   RobotOutlined,
+  SearchOutlined,
   SendOutlined,
+  SoundOutlined,
   StopOutlined,
   ThunderboltOutlined,
   WarningOutlined,
@@ -90,7 +92,7 @@ const CONNECTION_COLORS: Record<string, string> = {
 interface ControlItem {
   key: ButtonKey;
   label: string;
-  icon: React.ReactNode;
+  icon: ReactNode;
   danger?: boolean;
   confirmTitle?: string;
   confirmContent?: string;
@@ -125,6 +127,12 @@ const CONTROL_GROUPS: { title: string; description: string; items: ControlItem[]
       { key: 'shutdownRobot', label: '机器人关机', icon: <PoweroffOutlined />, danger: true, confirmTitle: '确认将机器人关机？', confirmContent: '整机关机后需要现场重新启动。请确保机器人处于安全环境，且没有正在进行的必要任务。' },
     ],
   },
+];
+
+const MODE_GROUPS: { key: 'explain' | 'guide' | 'unassigned'; label: string; color?: string; icon: ReactNode }[] = [
+  { key: 'explain', label: '讲解', color: 'blue', icon: <NodeIndexOutlined /> },
+  { key: 'guide', label: '带路', color: 'green', icon: <EnvironmentOutlined /> },
+  { key: 'unassigned', label: '未分配', icon: <ThunderboltOutlined /> },
 ];
 
 function formatTime(iso: string | null): string {
@@ -170,6 +178,14 @@ function routeProgressText(progress: string): string {
   if (progress === 'completed') return '前序位置';
   if (progress === 'active') return '当前位置';
   return '待执行';
+}
+
+function genderLabel(gender: string): string {
+  const g = gender.trim().toLowerCase();
+  if (['male', 'm', '男', '男声'].includes(g)) return '男声';
+  if (['female', 'f', '女', '女声'].includes(g)) return '女声';
+  if (['child', 'kid', '童', '童声'].includes(g)) return '童声';
+  return gender.trim();
 }
 
 const LOG_DIR_LABELS: Record<LogDirection, string> = {
@@ -219,8 +235,14 @@ function App() {
   const [flowModalOpen, setFlowModalOpen] = useState(false);
   const [logFilter, setLogFilter] = useState<'all' | LogDirection>('all');
   const [expandedLog, setExpandedLog] = useState<string | null>(null);
+  const [logDrawerOpen, setLogDrawerOpen] = useState(false);
+  const [lastSeenLogId, setLastSeenLogId] = useState<string | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
-  const [selectedVoice, setSelectedVoice] = useState<VoiceTone | null>(null);
+  const [voiceKeyword, setVoiceKeyword] = useState('');
+  const [voiceGender, setVoiceGender] = useState<string>('all');
+  const [previewingId, setPreviewingId] = useState<number | null>(null);
+  const [bindingId, setBindingId] = useState<number | null>(null);
+  const [showHiddenPoints, setShowHiddenPoints] = useState(true);
 
   const routePoints = useMemo(() => buildRoutePoints(snapshot, canControl), [snapshot, canControl]);
   const { task, innerTask } = getCurrentTasks(snapshot);
@@ -233,6 +255,40 @@ function App() {
   }, [config]);
   const filteredLogs = logs.filter((entry) => logFilter === 'all' || entry.direction === logFilter);
   const isActive = status !== 'disconnected';
+  const robotConnected = Boolean(snapshot?.deviceInfo.robotConnected);
+  const canNavigate = canControl && robotConnected;
+
+  // 未读报文数（logs 按时间倒序排列）
+  const unreadLogs = useMemo(() => {
+    if (logDrawerOpen) return 0;
+    if (!lastSeenLogId) return logs.length;
+    const idx = logs.findIndex((l) => l.id === lastSeenLogId);
+    return idx === -1 ? logs.length : idx;
+  }, [logs, lastSeenLogId, logDrawerOpen]);
+
+  const voiceGenders = useMemo(() => {
+    const set = new Set<string>();
+    voiceTones.forEach((v) => {
+      const label = v.gender ? genderLabel(v.gender) : '';
+      if (label) set.add(label);
+    });
+    return Array.from(set);
+  }, [voiceTones]);
+
+  const filteredVoices = useMemo(() => {
+    const kw = voiceKeyword.trim().toLowerCase();
+    return voiceTones.filter((v) => {
+      if (voiceGender !== 'all' && genderLabel(v.gender || '') !== voiceGender) return false;
+      if (!kw) return true;
+      return v.displayName.toLowerCase().includes(kw) || v.voiceCode.toLowerCase().includes(kw);
+    });
+  }, [voiceTones, voiceKeyword, voiceGender]);
+
+  const visiblePoints = useMemo(
+    () => (pointGroup?.points ?? []).filter((p) => showHiddenPoints || p.isUiVisible),
+    [pointGroup, showHiddenPoints],
+  );
+  const hiddenPointCount = (pointGroup?.points ?? []).filter((p) => !p.isUiVisible).length;
 
   const notify = (msg: string, type: 'success' | 'error' = 'success') => {
     messageApi[type](msg);
@@ -280,20 +336,25 @@ function App() {
     });
   };
 
+  const requestTaskMode = (name: string) => {
+    if (!canControl) return;
+    Modal.confirm({
+      title: `发起任务流程"${name}"？`,
+      content: '将通过文本提问方式向设备发送该任务指令，设备会根据当前状态处理。',
+      okText: '确认',
+      cancelText: '取消',
+      onOk: () => execute('textQuestion', { text: name }),
+    });
+  };
+
   const submitQuestion = (e: FormEvent) => {
     e.preventDefault();
     if (!question.trim()) return;
     execute('textQuestion', { text: question });
   };
 
-  const submitDirectNavigation = (e: FormEvent) => {
-    e.preventDefault();
-    if (!point.trim() || !pointName.trim() || !canControl) return;
-    navigateDirect(point.trim(), pointName.trim());
-  };
-
   const navigateDirect = (targetPoint: string, targetPointName: string) => {
-    if (!targetPoint || !targetPointName || !canControl) return;
+    if (!targetPoint || !targetPointName || !canNavigate) return;
     Modal.confirm({
       title: `导航到"${targetPointName}"？`,
       content: `将使用点位值 ${targetPoint} 发起独立导航，不改变当前任务树中的步骤索引。`,
@@ -301,6 +362,43 @@ function App() {
       cancelText: '取消',
       onOk: () => execute('navigateToPoint', { point: targetPoint, pointName: targetPointName }),
     });
+  };
+
+  const submitDirectNavigation = (e: FormEvent) => {
+    e.preventDefault();
+    if (!point.trim() || !pointName.trim() || !canNavigate) return;
+    navigateDirect(point.trim(), pointName.trim());
+  };
+
+  const handlePreview = (vt: VoiceTone) => {
+    setPreviewingId(vt.id);
+    controller.previewVoice(vt).catch((reason: unknown) => {
+      notify(reason instanceof Error ? `试听失败：${reason.message}` : '试听失败', 'error');
+    });
+  };
+
+  const handleBind = (vt: VoiceTone) => {
+    Modal.confirm({
+      title: `绑定音色"${vt.displayName}"？`,
+      content: '将通过 WebSocket 向设备发送音色绑定指令，设备会使用此音色进行语音合成。',
+      okText: '确认绑定',
+      cancelText: '取消',
+      onOk: () => {
+        try {
+          setBindingId(vt.id);
+          controller.bindVoice(vt);
+          notify('音色绑定指令已发送');
+        } catch (reason) {
+          notify(reason instanceof Error ? reason.message : '音色绑定失败', 'error');
+        }
+      },
+    });
+  };
+
+  const openLogDrawer = () => setLogDrawerOpen(true);
+  const closeLogDrawer = () => {
+    setLogDrawerOpen(false);
+    setLastSeenLogId(logs[0]?.id ?? null);
   };
 
   const copyDeviceCode = async () => {
@@ -315,42 +413,13 @@ function App() {
   const deviceStatus = screenOnline === true ? '在线' : screenOnline === false ? '离线' : '未知';
   const flowName = snapshot ? (snapshot.command?.name ?? '无任务流程') : '等待设备状态';
   const battery = snapshot?.deviceInfo.robotBatteryPercent;
+  const taskModeTotal = taskModes ? taskModes.guide.length + taskModes.explain.length + taskModes.unassigned.length : 0;
 
-  const manualPointForm = (
-    <form onSubmit={submitDirectNavigation}>
-      <Row gutter={8} style={{ marginBottom: 8 }}>
-        <Col span={10}>
-          <Form.Item label="点位值" style={{ marginBottom: 0 }}>
-            <Input
-              size="small"
-              value={point}
-              onChange={(e) => setPoint(e.target.value)}
-              placeholder="例如 cdz"
-              autoComplete="off"
-            />
-          </Form.Item>
-        </Col>
-        <Col span={14}>
-          <Form.Item label="点位名称" style={{ marginBottom: 0 }}>
-            <Input
-              size="small"
-              value={pointName}
-              onChange={(e) => setPointName(e.target.value)}
-              placeholder="例如 会议室"
-            />
-          </Form.Item>
-        </Col>
-      </Row>
-      <Button
-        block
-        icon={<EnvironmentOutlined />}
-        htmlType="submit"
-        disabled={!canControl || !point.trim() || !pointName.trim()}
-      >
-        导航到此点位
-      </Button>
-    </form>
-  );
+  const navDisabledReason = !canControl
+    ? '设备不可控制'
+    : !robotConnected
+      ? '机器人未连接，暂不可导航'
+      : '';
 
   return (
     <AntApp>
@@ -529,6 +598,11 @@ function App() {
                 {status === 'connecting' || status === 'reconnecting' ? <LoadingOutlined /> : <span className="status-dot" />}
                 {CONNECTION_LABELS[status]}
               </span>
+              <Badge count={unreadLogs} overflowCount={49} size="small" offset={[-4, 4]}>
+                <Button icon={<CodeOutlined />} onClick={openLogDrawer}>
+                  实时报文
+                </Button>
+              </Badge>
               <Button
                 icon={isQuerying ? <LoadingOutlined /> : <ReloadOutlined />}
                 onClick={controller.requestState}
@@ -605,384 +679,200 @@ function App() {
             </Card>
 
             {/* 主内容网格 */}
-            <Row gutter={16}>
-              {/* 左列：当前任务 + 轨迹预览 */}
+            <Row gutter={[16, 16]}>
+              {/* ============ 左列：任务进度 + 任务流程 + 直达导航 ============ */}
               <Col xs={24} xl={16}>
-                {/* 当前任务 */}
-                <Card title={<Space><NodeIndexOutlined /> 当前任务</Space>} extra={
-                  snapshot && <Tag color={statusTagColor(snapshot.taskState.status)}>{statusLabel(snapshot.taskState.status)}</Tag>
-                } style={{ marginBottom: 16 }}>
-                  {snapshot && task ? (
-                    <div>
-                      <Row gutter={16} align="middle">
-                        <Col flex="120px">
-                          <Statistic
-                            title="主任务"
-                            value={`${String(snapshot.taskState.taskIndex + 1).padStart(2, '0')} / ${String(snapshot.command?.tasks.length ?? 0).padStart(2, '0')}`}
-                            styles={{ content: { color: '#315efb', fontSize: 28, fontWeight: 500 } }}
-                          />
-                        </Col>
-                        <Col flex="auto">
-                          <Space orientation="vertical" size={4} style={{ width: '100%' }}>
-                            <Tag>{taskTypeLabel(task)}</Tag>
-                            <Title level={5} style={{ margin: 0, flex: 1, minWidth: 0 }}>
-                              {taskDisplayName(task)}
-                            </Title>
-                            <Text type="secondary" style={{ fontSize: 12 }}>{statusLabel(snapshot.taskState.status)}</Text>
-                          </Space>
-                        </Col>
-                      </Row>
-                      {innerTask && (
-                        <Card size="small" style={{ marginTop: 12, background: '#f6ffed', borderLeft: '3px solid #52c41a' }}>
-                          <Space align="center" style={{ width: '100%' }}>
-                            <ThunderboltOutlined style={{ color: '#52c41a' }} />
-                            <div style={{ flex: 1 }}>
-                              <Text type="secondary" style={{ fontSize: 11 }}>
-                                子任务 {snapshot.taskState.innerTaskIndex + 1} · {taskTypeLabel(innerTask)}
-                              </Text>
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <Text strong style={{ fontSize: 13 }}>
-                                  {taskDisplayName(innerTask)}
-                                </Text>
+                <div className="panel-stack">
+                  {/* 当前任务 + 轨迹：并排 */}
+                  <Row gutter={[16, 16]}>
+                    <Col xs={24} lg={10}>
+                      <Card
+                        className="fill-card"
+                        title={<Space><NodeIndexOutlined /> 当前任务</Space>}
+                        extra={snapshot && <Tag color={statusTagColor(snapshot.taskState.status)}>{statusLabel(snapshot.taskState.status)}</Tag>}
+                      >
+                        {snapshot && task ? (
+                          <div>
+                            <Space align="start" size={16} style={{ width: '100%' }}>
+                              <Statistic
+                                title="主任务"
+                                value={`${String(snapshot.taskState.taskIndex + 1).padStart(2, '0')} / ${String(snapshot.command?.tasks.length ?? 0).padStart(2, '0')}`}
+                                styles={{ content: { color: '#315efb', fontSize: 26, fontWeight: 500 } }}
+                              />
+                              <Space orientation="vertical" size={4} style={{ minWidth: 0 }}>
+                                <Tag>{taskTypeLabel(task)}</Tag>
+                                <Text strong className="clamp-2">{taskDisplayName(task)}</Text>
+                              </Space>
+                            </Space>
+                            {innerTask && (
+                              <div className="inner-task">
+                                <ThunderboltOutlined style={{ color: '#52c41a' }} />
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <Text type="secondary" style={{ fontSize: 11 }}>
+                                    子任务 {snapshot.taskState.innerTaskIndex + 1} · {taskTypeLabel(innerTask)}
+                                  </Text>
+                                  <div><Text strong className="clamp-2" style={{ fontSize: 13 }}>{taskDisplayName(innerTask)}</Text></div>
+                                </div>
+                                <Tag color={statusTagColor(snapshot.taskState.innerTaskStatus ?? '')}>
+                                  {statusLabel(snapshot.taskState.innerTaskStatus)}
+                                </Tag>
                               </div>
-                            </div>
-                            <Tag color={statusTagColor(snapshot.taskState.innerTaskStatus ?? '')}>
-                              {statusLabel(snapshot.taskState.innerTaskStatus)}
-                            </Tag>
-                          </Space>
-                        </Card>
-                      )}
-                    </div>
-                  ) : (
-                    <Empty
-                      image={Empty.PRESENTED_IMAGE_SIMPLE}
-                      description={snapshot ? '设备当前处于空闲状态，可以发起对话或独立导航。' : '连接成功后会自动发送 getState，获取当前主任务和子任务。'}
-                    />
-                  )}
-                </Card>
+                            )}
+                          </div>
+                        ) : (
+                          <Empty
+                            image={Empty.PRESENTED_IMAGE_SIMPLE}
+                            description={snapshot ? '设备空闲，可发起任务流程、对话或直达导航。' : '连接成功后会自动获取当前任务。'}
+                          />
+                        )}
+                      </Card>
+                    </Col>
 
-                {/* 轨迹预览 */}
-                <Card
-                  title={
-                    <Space
-                      style={{ cursor: snapshot?.command ? 'pointer' : 'default', color: snapshot?.command ? '#1677ff' : undefined }}
-                      onClick={() => snapshot?.command && setFlowModalOpen(true)}
-                    >
-                      <EnvironmentOutlined />
-                      <Tooltip title={snapshot?.command ? '点击查看完整任务流程' : ''}>
-                        <span>{flowName}</span>
-                      </Tooltip>
-                      {snapshot?.command && (
-                        <Tag style={{ fontSize: 10, margin: 0, lineHeight: '16px' }}>
-                          {snapshot.command.tasks.length} 步
-                        </Tag>
-                      )}
-                    </Space>
-                  }
-                  extra={
-                    <Space>
-                      <Text type="secondary">{routePoints.length} 个导航点</Text>
-                      {routePoints.length > 0 && (
-                        <Button size="small" type="link" onClick={() => setPointsModalOpen(true)}>
-                          全部点位
-                        </Button>
-                      )}
-                    </Space>
-                  }
-                  style={{ marginBottom: 16 }}
-                >
-                  {routePoints.length ? (
-                    <div>
-                      <Steps
-                        direction="horizontal"
-                        size="small"
-                        current={routePoints.findIndex((p) => p.progress === 'active')}
-                        items={routePoints.map((rp, idx) => ({
-                          title: (
-                            <Tooltip title={rp.canNavigate ? `跳转到 ${rp.name}` : rp.name}>
-                              <span
-                                style={{ cursor: rp.canNavigate ? 'pointer' : 'default', opacity: rp.canNavigate ? 1 : 0.6 }}
-                                onClick={() => rp.canNavigate && requestJump(rp)}
-                              >
-                                {rp.name}
-                              </span>
+                    <Col xs={24} lg={14}>
+                      <Card
+                        className="fill-card"
+                        title={
+                          <Space
+                            style={{ cursor: snapshot?.command ? 'pointer' : 'default', color: snapshot?.command ? '#1677ff' : undefined }}
+                            onClick={() => snapshot?.command && setFlowModalOpen(true)}
+                          >
+                            <EnvironmentOutlined />
+                            <Tooltip title={snapshot?.command ? '点击查看完整任务流程' : ''}>
+                              <span>{snapshot?.command ? flowName : '轨迹预览'}</span>
                             </Tooltip>
-                          ),
-                          description: routeProgressText(rp.progress),
-                          status: rp.progress === 'completed' ? 'finish' : rp.progress === 'active' ? 'process' : 'wait',
-                          icon: rp.progress === 'completed' ? <CheckOutlined /> : idx + 1,
-                        }))}
-                      />
-                      <Divider style={{ margin: '8px 0' }} />
-                      <Space size="large">
-                        <Space>
-                          <Badge color="#52c41a" />
-                          <Text type="secondary" style={{ fontSize: 12 }}>前序</Text>
-                        </Space>
-                        <Space>
-                          <Badge color="#1677ff" />
-                          <Text type="secondary" style={{ fontSize: 12 }}>当前</Text>
-                        </Space>
-                        <Space>
-                          <Badge color="#d9d9d9" />
-                          <Text type="secondary" style={{ fontSize: 12 }}>待执行</Text>
-                        </Space>
-                        <Text type="secondary" style={{ fontSize: 11, marginLeft: 'auto' }}>
-                          点击可用点位可跳转 · 暂停时需先继续任务
-                        </Text>
-                      </Space>
-                    </div>
-                  ) : (
-                    <Empty
-                      image={Empty.PRESENTED_IMAGE_SIMPLE}
-                      description={snapshot?.command ? '任务树中没有满足显示条件的根导航任务。' : '轨迹仅展示流程中的可见根导航任务，不代表机器人实际运动路径。'}
-                    />
-                  )}
-                </Card>
+                            {snapshot?.command && (
+                              <Tag style={{ fontSize: 10, margin: 0, lineHeight: '16px' }}>
+                                {snapshot.command.tasks.length} 步
+                              </Tag>
+                            )}
+                          </Space>
+                        }
+                        extra={
+                          routePoints.length > 0 && (
+                            <Button size="small" type="link" onClick={() => setPointsModalOpen(true)}>
+                              {routePoints.length} 个导航点
+                            </Button>
+                          )
+                        }
+                      >
+                        {routePoints.length ? (
+                          <div>
+                            <div className="route-steps">
+                              <Steps
+                                direction="horizontal"
+                                size="small"
+                                current={routePoints.findIndex((p) => p.progress === 'active')}
+                                items={routePoints.map((rp, idx) => ({
+                                  title: (
+                                    <Tooltip title={rp.canNavigate ? `跳转到 ${rp.name}` : rp.name}>
+                                      <span
+                                        style={{ cursor: rp.canNavigate ? 'pointer' : 'default', opacity: rp.canNavigate ? 1 : 0.6 }}
+                                        onClick={() => rp.canNavigate && requestJump(rp)}
+                                      >
+                                        {rp.name}
+                                      </span>
+                                    </Tooltip>
+                                  ),
+                                  description: routeProgressText(rp.progress),
+                                  status: rp.progress === 'completed' ? 'finish' : rp.progress === 'active' ? 'process' : 'wait',
+                                  icon: rp.progress === 'completed' ? <CheckOutlined /> : idx + 1,
+                                }))}
+                              />
+                            </div>
+                            <Divider style={{ margin: '8px 0' }} />
+                            <Text type="secondary" style={{ fontSize: 11 }}>
+                              点击可用点位可跳转 · 暂停时需先继续任务
+                            </Text>
+                          </div>
+                        ) : (
+                          <Empty
+                            image={Empty.PRESENTED_IMAGE_SIMPLE}
+                            description={snapshot?.command ? '任务树中没有满足显示条件的根导航任务。' : '执行带导航的任务流程时，这里会显示路线进度。'}
+                          />
+                        )}
+                      </Card>
+                    </Col>
+                  </Row>
 
-                {/* 任务流程列表 */}
-                <Card
-                  title={<Space><NodeIndexOutlined /> 任务流程</Space>}
-                  extra={
-                    <Space size={4}>
-                      {taskModes && (
-                        <Text type="secondary" style={{ fontSize: 11 }}>
-                          {taskModes.guide.length + taskModes.explain.length + taskModes.unassigned.length} 个
-                        </Text>
-                      )}
-                      <Button
-                        size="small"
-                        type="text"
-                        icon={taskModesLoading ? <LoadingOutlined /> : <ReloadOutlined />}
-                        aria-label="刷新任务流程"
-                        onClick={controller.fetchTaskModes}
-                        disabled={status !== 'connected'}
-                      />
-                    </Space>
-                  }
-                  style={{ marginBottom: 16 }}
-                >
-                  {taskModes ? (
-                    (taskModes.guide.length > 0 || taskModes.explain.length > 0 || taskModes.unassigned.length > 0) ? (
-                      <Space orientation="vertical" style={{ width: '100%' }} size="middle">
-                        {taskModes.explain.length > 0 && (
-                          <div>
-                            <div style={{ marginBottom: 6 }}>
-                              <Space>
-                                <Tag color="blue">讲解</Tag>
-                                <Text type="secondary" style={{ fontSize: 11 }}>{taskModes.explain.length} 个</Text>
-                              </Space>
-                            </div>
-                            <Row gutter={[8, 8]}>
-                              {taskModes.explain.map((name) => {
-                                const isRunning = snapshot?.command?.name === name;
-                                return (
-                                  <Col key={name} flex="1 1 200px">
-                                    <Button
-                                      block
-                                      style={{ textAlign: 'left', height: 36 }}
-                                      disabled={!canControl}
-                                      type={isRunning ? 'primary' : 'default'}
-                                      icon={<NodeIndexOutlined />}
-                                      onClick={() => {
-                                        if (!canControl) return;
-                                        Modal.confirm({
-                                          title: `发起任务流程"${name}"？`,
-                                          content: '将通过文本提问方式向设备发送该任务指令，设备会根据当前状态处理。',
-                                          okText: '确认',
-                                          cancelText: '取消',
-                                          onOk: () => execute('textQuestion', { text: name }),
-                                        });
-                                      }}
-                                    >
-                                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                        {name}
-                                      </span>
-                                      {isRunning && <Tag color="blue" style={{ marginLeft: 4, fontSize: 9 }}>运行中</Tag>}
-                                    </Button>
-                                  </Col>
-                                );
-                              })}
-                            </Row>
-                          </div>
-                        )}
-                        {taskModes.guide.length > 0 && (
-                          <div>
-                            <div style={{ marginBottom: 6 }}>
-                              <Space>
-                                <Tag color="green">带路</Tag>
-                                <Text type="secondary" style={{ fontSize: 11 }}>{taskModes.guide.length} 个</Text>
-                              </Space>
-                            </div>
-                            <Row gutter={[8, 8]}>
-                              {taskModes.guide.map((name) => {
-                                const isRunning = snapshot?.command?.name === name;
-                                return (
-                                  <Col key={name} flex="1 1 200px">
-                                    <Button
-                                      block
-                                      style={{ textAlign: 'left', height: 36 }}
-                                      disabled={!canControl}
-                                      type={isRunning ? 'primary' : 'default'}
-                                      icon={<EnvironmentOutlined />}
-                                      onClick={() => {
-                                        if (!canControl) return;
-                                        Modal.confirm({
-                                          title: `发起任务流程"${name}"？`,
-                                          content: '将通过文本提问方式向设备发送该任务指令，设备会根据当前状态处理。',
-                                          okText: '确认',
-                                          cancelText: '取消',
-                                          onOk: () => execute('textQuestion', { text: name }),
-                                        });
-                                      }}
-                                    >
-                                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                        {name}
-                                      </span>
-                                      {isRunning && <Tag color="blue" style={{ marginLeft: 4, fontSize: 9 }}>运行中</Tag>}
-                                    </Button>
-                                  </Col>
-                                );
-                              })}
-                            </Row>
-                          </div>
-                        )}
-                        {taskModes.unassigned.length > 0 && (
-                          <div>
-                            <div style={{ marginBottom: 6 }}>
-                              <Space>
-                                <Tag>未分配</Tag>
-                                <Text type="secondary" style={{ fontSize: 11 }}>{taskModes.unassigned.length} 个</Text>
-                              </Space>
-                            </div>
-                            <Row gutter={[8, 8]}>
-                              {taskModes.unassigned.map((name) => {
-                                const isRunning = snapshot?.command?.name === name;
-                                return (
-                                  <Col key={name} flex="1 1 200px">
-                                    <Button
-                                      block
-                                      style={{ textAlign: 'left', height: 36 }}
-                                      disabled={!canControl}
-                                      type={isRunning ? 'primary' : 'default'}
-                                      icon={<ThunderboltOutlined />}
-                                      onClick={() => {
-                                        if (!canControl) return;
-                                        Modal.confirm({
-                                          title: `发起任务流程"${name}"？`,
-                                          content: '将通过文本提问方式向设备发送该任务指令，设备会根据当前状态处理。',
-                                          okText: '确认',
-                                          cancelText: '取消',
-                                          onOk: () => execute('textQuestion', { text: name }),
-                                        });
-                                      }}
-                                    >
-                                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                        {name}
-                                      </span>
-                                      {isRunning && <Tag color="blue" style={{ marginLeft: 4, fontSize: 9 }}>运行中</Tag>}
-                                    </Button>
-                                  </Col>
-                                );
-                              })}
-                            </Row>
-                          </div>
-                        )}
+                  {/* 任务流程 */}
+                  <Card
+                    title={<Space><NodeIndexOutlined /> 任务流程</Space>}
+                    extra={
+                      <Space size={4}>
+                        {taskModes && <Text type="secondary" style={{ fontSize: 11 }}>{taskModeTotal} 个</Text>}
+                        <Button
+                          size="small"
+                          type="text"
+                          icon={taskModesLoading ? <LoadingOutlined /> : <ReloadOutlined />}
+                          aria-label="刷新任务流程"
+                          onClick={controller.fetchTaskModes}
+                          disabled={status !== 'connected'}
+                        />
                       </Space>
+                    }
+                  >
+                    {taskModes && taskModeTotal > 0 ? (
+                      <div className="mode-groups">
+                        {MODE_GROUPS.filter((g) => taskModes[g.key].length > 0).map((group) => (
+                          <div key={group.key} className="mode-group">
+                            <div className="mode-group__label">
+                              <Tag color={group.color} style={{ margin: 0 }}>{group.label}</Tag>
+                              <Text type="secondary" style={{ fontSize: 11 }}>{taskModes[group.key].length}</Text>
+                            </div>
+                            <div className="mode-grid">
+                              {taskModes[group.key].map((name) => {
+                                const isRunning = snapshot?.command?.name === name;
+                                return (
+                                  <Tooltip key={name} title={name} mouseEnterDelay={0.6}>
+                                    <Button
+                                      className="mode-btn"
+                                      disabled={!canControl}
+                                      type={isRunning ? 'primary' : 'default'}
+                                      icon={group.icon}
+                                      onClick={() => requestTaskMode(name)}
+                                    >
+                                      <span className="ellipsis">{name}</span>
+                                      {isRunning && <Tag color="blue" style={{ marginLeft: 'auto', fontSize: 10 }}>运行中</Tag>}
+                                    </Button>
+                                  </Tooltip>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     ) : (
                       <Empty
                         image={Empty.PRESENTED_IMAGE_SIMPLE}
-                        description="设备没有可用的任务流程"
+                        description={taskModes ? '设备没有可用的任务流程' : taskModesLoading ? '正在获取任务流程…' : '连接设备后将自动获取任务流程列表'}
                       />
-                    )
-                  ) : (
-                    <Empty
-                      image={Empty.PRESENTED_IMAGE_SIMPLE}
-                      description={taskModesLoading ? '正在获取任务流程…' : '连接设备后将自动获取任务流程列表'}
-                    />
-                  )}
-                </Card>
-              </Col>
+                    )}
+                  </Card>
 
-              {/* 右列：控制动作 + 文本提问 + 直达导航 */}
-              <Col xs={24} xl={8}>
-                {/* 控制动作 */}
-                <Card
-                  title={<Space><ThunderboltOutlined /> 控制动作</Space>}
-                  extra={
-                    <Tag color={canControl ? 'success' : 'default'}>
-                      {canControl ? '可控制' : '已锁定'}
-                    </Tag>
-                  }
-                  style={{ marginBottom: 16 }}
-                >
-                  {CONTROL_GROUPS.map((group, gi) => (
-                    <div key={group.title} style={gi > 0 ? { marginTop: 16, paddingTop: 16, borderTop: '1px solid #f0f0f0' } : undefined}>
-                      <div style={{ marginBottom: 8 }}>
-                        <Text strong style={{ fontSize: 13 }}>{group.title}</Text>
-                        <br />
-                        <Text type="secondary" style={{ fontSize: 11 }}>{group.description}</Text>
-                      </div>
-                      <Row gutter={[8, 8]}>
-                        {group.items.map((item) => {
-                          const enabled = Boolean(canControl && snapshot?.buttons[item.key]);
-                          return (
-                            <Col span={12} key={item.key}>
-              <Button
-                block
-                icon={item.icon}
-                disabled={!enabled}
-                danger={item.danger}
-                onClick={() => handleControlClick(item)}
-                style={{ textAlign: 'left', height: 40 }}
-              >
-                {item.label}
-              </Button>
-                            </Col>
-                          );
-                        })}
-                      </Row>
-                    </div>
-                  ))}
-                </Card>
-
-                {/* 文本提问 */}
-                <Card
-                  size="small"
-                  title={<Space><MessageOutlined /> 文本提问</Space>}
-                  style={{ marginBottom: 16 }}
-                >
-                  <form onSubmit={submitQuestion}>
-                    <Input.TextArea
-                      value={question}
-                      onChange={(e) => setQuestion(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                          e.preventDefault();
-                          if (canControl && question.trim()) execute('textQuestion', { text: question });
-                        }
-                      }}
-                      placeholder="例如：请介绍一下序厅的主要内容。"
-                      maxLength={500}
-                      rows={3}
-                    />
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
-                      <Text type="secondary" style={{ fontSize: 11 }}>Ctrl + Enter 发送 · {question.length}/500</Text>
-                      <Button type="primary" size="small" htmlType="submit" icon={<SendOutlined />} disabled={!canControl || !question.trim()}>
-                        发送
-                      </Button>
-                    </div>
-                  </form>
-                </Card>
-
-                {/* 直达导航 */}
-                <Card
-                  size="small"
-                  title={<Space><EnvironmentOutlined /> 直达导航</Space>}
-                  extra={
-                    pointGroup ? (
-                      <Space size={4}>
-                        <Text type="secondary" style={{ fontSize: 11 }}>{pointGroup.pointCount} 个点位</Text>
+                  {/* 直达导航：点位磁贴 */}
+                  <Card
+                    title={
+                      <Space>
+                        <EnvironmentOutlined /> 直达导航
+                        {pointGroup && <Tag style={{ margin: 0 }}>{pointGroup.name}</Tag>}
+                      </Space>
+                    }
+                    extra={
+                      <Space size={8}>
+                        {hiddenPointCount > 0 && (
+                          <Segmented
+                            size="small"
+                            value={showHiddenPoints ? 'all' : 'visible'}
+                            onChange={(v) => setShowHiddenPoints(v === 'all')}
+                            options={[
+                              { label: `全部 ${pointGroup?.points.length ?? 0}`, value: 'all' },
+                              { label: `可见 ${(pointGroup?.points.length ?? 0) - hiddenPointCount}`, value: 'visible' },
+                            ]}
+                          />
+                        )}
+                        {!hiddenPointCount && pointGroup && (
+                          <Text type="secondary" style={{ fontSize: 11 }}>{pointGroup.points.length} 个点位</Text>
+                        )}
                         <Button
                           size="small"
                           type="text"
@@ -992,344 +882,354 @@ function App() {
                           disabled={status !== 'connected'}
                         />
                       </Space>
-                    ) : pointGroupLoading ? (
-                      <LoadingOutlined style={{ fontSize: 12 }} />
-                    ) : null
-                  }
-                >
-                  {pointGroup && pointGroup.points.length > 0 ? (
-                    <div>
-                      <div style={{ marginBottom: 8 }}>
-                        <Text type="secondary" style={{ fontSize: 11 }}>分组：{pointGroup.name}</Text>
+                    }
+                  >
+                    {snapshot && navDisabledReason && (
+                      <div className="inline-hint">
+                        <WarningOutlined /> {navDisabledReason}
                       </div>
-                      <List
-                        size="small"
-                        dataSource={pointGroup.points}
-                        renderItem={(pt: PointItem) => (
-                          <List.Item
-                            style={{ padding: '6px 0' }}
-                            actions={[
-                              <Button
-                                key="nav"
-                                size="small"
-                                type="primary"
-                                icon={<EnvironmentOutlined />}
-                                disabled={!canControl || !pt.isActive}
-                                onClick={() => navigateDirect(pt.command, pt.name)}
-                              >
-                                导航
-                              </Button>,
-                            ]}
-                          >
-                            <List.Item.Meta
-                              avatar={
-                                <Avatar
-                                  size={28}
-                                  shape="circle"
-                                  icon={pt.isChargingPile ? <BatteryChargingIcon /> : <EnvironmentOutlined />}
-                                  style={{
-                                    background: pt.isChargingPile ? '#52c41a' : pt.isUiVisible ? '#1677ff' : '#f0f0f0',
-                                    color: pt.isChargingPile || pt.isUiVisible ? '#fff' : '#8c8c8c',
-                                    fontSize: 11,
-                                    fontWeight: 600,
-                                  }}
-                                />
-                              }
-                              title={
-                                <Space size={4}>
-                                  <Text strong style={{ fontSize: 13 }}>{pt.name}</Text>
-                                  {pt.isChargingPile && <Tag color="green" style={{ fontSize: 10, margin: 0, lineHeight: '16px' }}>充电桩</Tag>}
-                                  {!pt.isActive && <Tag color="red" style={{ fontSize: 10, margin: 0, lineHeight: '16px' }}>未启用</Tag>}
-                                  {!pt.isUiVisible && <Tag style={{ fontSize: 10, margin: 0, lineHeight: '16px' }}>不可见</Tag>}
-                                </Space>
-                              }
-                              description={
-                                <Text type="secondary" style={{ fontSize: 11 }}>
-                                  命令值: {pt.command}
-                                </Text>
-                              }
-                            />
-                          </List.Item>
-                        )}
-                      />
-                      <Divider style={{ margin: '8px 0' }} />
-                      <Collapse
-                        size="small"
-                        ghost
-                        items={[
-                          {
-                            key: 'manual',
-                            label: '手动输入点位',
-                            children: manualPointForm,
-                          },
-                        ]}
-                      />
-                    </div>
-                  ) : (
-                    <div>
-                      <Alert
-                        type="info"
-                        showIcon
-                        title={pointGroup ? '点位分组为空' : '尚未获取点位分组'}
+                    )}
+
+                    {visiblePoints.length > 0 ? (
+                      <div className="point-grid">
+                        {visiblePoints.map((pt: PointItem) => {
+                          const disabled = !canNavigate || !pt.isActive;
+                          return (
+                            <button
+                              type="button"
+                              key={pt.id || `${pt.command}-${pt.name}`}
+                              className={[
+                                'point-tile',
+                                pt.isChargingPile ? 'point-tile--charging' : '',
+                                !pt.isUiVisible ? 'point-tile--hidden' : '',
+                              ].join(' ')}
+                              disabled={disabled}
+                              title={disabled ? (pt.isActive ? navDisabledReason : '点位未启用') : `导航到 ${pt.name}`}
+                              onClick={() => navigateDirect(pt.command, pt.name)}
+                            >
+                              <span className="point-tile__icon">
+                                {pt.isChargingPile ? <BatteryChargingIcon /> : <EnvironmentOutlined />}
+                              </span>
+                              <span className="point-tile__body">
+                                <span className="point-tile__name">{pt.name}</span>
+                                <span className="point-tile__code">{pt.command}</span>
+                              </span>
+                              {(!pt.isActive || !pt.isUiVisible) && (
+                                <span className="point-tile__flag">{!pt.isActive ? '未启用' : '隐藏'}</span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <Empty
+                        image={Empty.PRESENTED_IMAGE_SIMPLE}
                         description={
                           pointGroup
-                            ? '设备绑定的点位分组中没有点位。'
-                            : status === 'connected'
+                            ? '点位分组中没有点位'
+                            : pointGroupLoading || status === 'connected'
                               ? '正在获取点位分组…'
-                              : '连接设备后将自动获取点位分组。'
+                              : '连接设备后将自动获取点位分组'
                         }
-                        style={{ marginBottom: 12, fontSize: 12 }}
                       />
-                      <Collapse
-                        size="small"
-                        ghost
-                        items={[
-                          {
-                            key: 'manual',
-                            label: '手动输入点位',
-                            children: manualPointForm,
-                          },
-                        ]}
-                      />
-                    </div>
-                  )}
-                </Card>
+                    )}
 
-                {/* 音色选择 */}
-                <Card
-                  size="small"
-                  title={<Space><AudioOutlined /> 音色选择</Space>}
-                  extra={
-                    <Space size={4}>
-                      {currentVoice && (
-                        <Tag color="blue" style={{ fontSize: 10, margin: 0 }}>
-                          当前: {currentVoice.displayName}
-                        </Tag>
-                      )}
+                    {/* 手动输入：一行 */}
+                    <form className="manual-point" onSubmit={submitDirectNavigation}>
+                      <Text type="secondary" style={{ fontSize: 12, flexShrink: 0 }}>手动点位</Text>
+                      <Space.Compact style={{ flex: 1, minWidth: 0 }}>
+                        <Input
+                          style={{ width: '40%' }}
+                          value={point}
+                          onChange={(e) => setPoint(e.target.value)}
+                          placeholder="点位值，如 cdz"
+                          autoComplete="off"
+                        />
+                        <Input
+                          style={{ width: '60%' }}
+                          value={pointName}
+                          onChange={(e) => setPointName(e.target.value)}
+                          placeholder="点位名称，如 会议室"
+                        />
+                      </Space.Compact>
                       <Button
-                        size="small"
-                        type="text"
-                        icon={voiceLoading ? <LoadingOutlined /> : <ReloadOutlined />}
-                        aria-label="刷新音色"
-                        onClick={controller.fetchVoices}
-                        disabled={status !== 'connected'}
-                      />
-                    </Space>
-                  }
-                >
-                  {voiceTones.length > 0 ? (
-                    <div>
-                      <List
-                        size="small"
-                        dataSource={voiceTones}
-                        renderItem={(vt: VoiceTone) => {
-                          const isCurrent = currentVoice?.id === vt.id;
-                          const isSelected = selectedVoice?.id === vt.id;
-                          return (
-                            <List.Item
-                              style={{
-                                padding: '6px 0',
-                                background: isSelected ? '#f0f5ff' : undefined,
-                                paddingLeft: isSelected ? 8 : undefined,
-                                borderRadius: isSelected ? 6 : undefined,
-                              }}
-                              actions={[
-                                <Button
-                                  key="preview"
-                                  size="small"
-                                  icon={voicePreviewing ? <LoadingOutlined /> : <PlayCircleOutlined />}
-                                  disabled={voicePreviewing || !canControl}
-                                  onClick={() => {
-                                    try {
-                                      controller.previewVoice(vt);
-                                    } catch (reason) {
-                                      notify(reason instanceof Error ? reason.message : '播报失败', 'error');
-                                    }
-                                  }}
-                                >
-                                  播报
-                                </Button>,
-                                <Button
-                                  key="bind"
-                                  size="small"
-                                  type={isCurrent ? 'default' : 'primary'}
-                                  loading={voiceBinding && isSelected}
-                                  disabled={!canControl || isCurrent || voiceBinding}
-                                  onClick={() => {
-                                    Modal.confirm({
-                                      title: `绑定音色“${vt.displayName}”？`,
-                                      content: '将通过 WebSocket 向设备发送音色绑定指令，设备会使用此音色进行语音合成。',
-                                      okText: '确认绑定',
-                                      cancelText: '取消',
-                                      onOk: () => {
-                                        try {
-                                          controller.bindVoice(vt);
-                                          notify('音色绑定指令已发送');
-                                        } catch (reason) {
-                                          notify(reason instanceof Error ? reason.message : '音色绑定失败', 'error');
-                                        }
-                                      },
-                                    });
-                                  }}
-                                >
-                                  {isCurrent ? '已绑定' : '绑定'}
-                                </Button>,
-                              ]}
-                            >
-                              <List.Item.Meta
-                                avatar={
-                                  <Avatar
-                                    size={28}
-                                    shape="circle"
-                                    icon={<AudioOutlined />}
-                                    style={{
-                                      background: isCurrent ? '#52c41a' : '#1677ff',
-                                      fontSize: 11,
-                                    }}
-                                  />
-                                }
-                                title={
-                                  <Space size={4}>
-                                    <Text
-                                      strong
-                                      style={{ fontSize: 13, cursor: 'pointer' }}
-                                    onClick={() => setSelectedVoice(isSelected ? null : vt)}
-                                  >
-                                    {vt.displayName}
-                                  </Text>
-                                  {vt.isDefault && <Tag color="orange" style={{ fontSize: 10, margin: 0, lineHeight: '16px' }}>默认</Tag>}
-                                  {isCurrent && <Tag color="green" style={{ fontSize: 10, margin: 0, lineHeight: '16px' }}>当前</Tag>}
-                                  </Space>
-                                }
-                                description={
-                                  <Space orientation="vertical" size={0} style={{ width: '100%' }}>
-                                    <Text type="secondary" style={{ fontSize: 11 }}>
-                                      {vt.voiceCode} · 语速 {vt.speechRate}
-                                    </Text>
-                                    <Text type="secondary" style={{ fontSize: 11, color: 'rgba(0,0,0,0.35)' }}>
-                                      试听文本：{vt.customTestText || '你好，这是一段音色试听。'}
-                                    </Text>
-                                    {voicePreviewing && previewText && selectedVoice?.id === vt.id && (
-                                      <Text type="warning" style={{ fontSize: 11 }}>
-                                        正在播报：{previewText}
-                                      </Text>
-                                    )}
-                                  </Space>
-                                }
-                              />
-                            </List.Item>
-                          );
+                        icon={<EnvironmentOutlined />}
+                        htmlType="submit"
+                        disabled={!canNavigate || !point.trim() || !pointName.trim()}
+                      >
+                        导航
+                      </Button>
+                    </form>
+                  </Card>
+                </div>
+              </Col>
+
+              {/* ============ 右列：控制动作 + 文本提问 + 音色 ============ */}
+              <Col xs={24} xl={8}>
+                <div className="panel-stack">
+                  {/* 控制动作 */}
+                  <Card
+                    title={<Space><ThunderboltOutlined /> 控制动作</Space>}
+                    extra={
+                      <Tag color={canControl ? 'success' : 'default'}>
+                        {canControl ? '可控制' : '已锁定'}
+                      </Tag>
+                    }
+                  >
+                    {CONTROL_GROUPS.map((group, gi) => (
+                      <div key={group.title} className={gi > 0 ? 'control-group control-group--split' : 'control-group'}>
+                        <div className="control-group__title">
+                          <Text strong style={{ fontSize: 13 }}>{group.title}</Text>
+                          <Text type="secondary" style={{ fontSize: 11 }}>{group.description}</Text>
+                        </div>
+                        <div className="control-grid">
+                          {group.items.map((item) => {
+                            const enabled = Boolean(canControl && snapshot?.buttons[item.key]);
+                            return (
+                              <Button
+                                key={item.key}
+                                block
+                                icon={item.icon}
+                                disabled={!enabled}
+                                danger={item.danger}
+                                onClick={() => handleControlClick(item)}
+                                className="control-btn"
+                              >
+                                {item.label}
+                              </Button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </Card>
+
+                  {/* 文本提问 */}
+                  <Card size="small" title={<Space><MessageOutlined /> 文本提问</Space>}>
+                    <form onSubmit={submitQuestion}>
+                      <Input.TextArea
+                        value={question}
+                        onChange={(e) => setQuestion(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                            e.preventDefault();
+                            if (canControl && question.trim()) execute('textQuestion', { text: question });
+                          }
                         }}
+                        placeholder="例如：请介绍一下序厅的主要内容。"
+                        maxLength={500}
+                        autoSize={{ minRows: 2, maxRows: 5 }}
                       />
-                    </div>
-                  ) : (
-                    <Empty
-                      image={Empty.PRESENTED_IMAGE_SIMPLE}
-                      description={voiceLoading ? '正在获取音色列表…' : status === 'connected' ? '没有可选音色' : '连接设备后将自动获取音色列表'}
-                    />
-                  )}
-                </Card>
+                      <div className="question-footer">
+                        <Text type="secondary" style={{ fontSize: 11 }}>Ctrl + Enter 发送 · {question.length}/500</Text>
+                        <Button type="primary" size="small" htmlType="submit" icon={<SendOutlined />} disabled={!canControl || !question.trim()}>
+                          发送
+                        </Button>
+                      </div>
+                    </form>
+                  </Card>
+
+                  {/* 音色选择 */}
+                  <Card
+                    size="small"
+                    className="voice-card"
+                    title={<Space><AudioOutlined /> 音色选择</Space>}
+                    extra={
+                      <Space size={4}>
+                        {voiceTones.length > 0 && <Text type="secondary" style={{ fontSize: 11 }}>{voiceTones.length} 个</Text>}
+                        <Button
+                          size="small"
+                          type="text"
+                          icon={voiceLoading ? <LoadingOutlined /> : <ReloadOutlined />}
+                          aria-label="刷新音色"
+                          onClick={controller.fetchVoices}
+                          disabled={status !== 'connected'}
+                        />
+                      </Space>
+                    }
+                  >
+                    {voiceTones.length > 0 ? (
+                      <div>
+                        {/* 当前音色 */}
+                        {currentVoice && (
+                          <div className="voice-current">
+                            <Avatar size={34} icon={<AudioOutlined />} style={{ background: '#52c41a', flexShrink: 0 }} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <Text type="secondary" style={{ fontSize: 11 }}>当前音色</Text>
+                              <div className="ellipsis"><Text strong>{currentVoice.displayName}</Text></div>
+                            </div>
+                            <Button
+                              size="small"
+                              icon={voicePreviewing && previewingId === currentVoice.id ? <LoadingOutlined /> : <SoundOutlined />}
+                              disabled={voicePreviewing || status !== 'connected'}
+                              onClick={() => handlePreview(currentVoice)}
+                            >
+                              试听
+                            </Button>
+                          </div>
+                        )}
+
+                        {voicePreviewing && previewText && (
+                          <div className="voice-playing">
+                            <SoundOutlined /> <span className="ellipsis">正在播放：{previewText}</span>
+                          </div>
+                        )}
+
+                        {/* 筛选 */}
+                        <div className="voice-filter">
+                          <Input
+                            size="small"
+                            allowClear
+                            prefix={<SearchOutlined />}
+                            placeholder="搜索音色名称 / 编码"
+                            value={voiceKeyword}
+                            onChange={(e) => setVoiceKeyword(e.target.value)}
+                          />
+                          {voiceGenders.length > 1 && (
+                            <Segmented
+                              size="small"
+                              value={voiceGender}
+                              onChange={(v) => setVoiceGender(String(v))}
+                              options={[{ label: '全部', value: 'all' }, ...voiceGenders.map((g) => ({ label: g, value: g }))]}
+                            />
+                          )}
+                        </div>
+
+                        {/* 音色网格（限高滚动） */}
+                        {filteredVoices.length > 0 ? (
+                          <div className="voice-grid">
+                            {filteredVoices.map((vt) => {
+                              const isCurrent = currentVoice?.id === vt.id;
+                              const isPreviewingThis = voicePreviewing && previewingId === vt.id;
+                              return (
+                                <div key={vt.id} className={`voice-tile${isCurrent ? ' voice-tile--current' : ''}`}>
+                                  <div className="voice-tile__main">
+                                    <div className="voice-tile__name ellipsis" title={vt.displayName}>{vt.displayName}</div>
+                                    <div className="voice-tile__meta ellipsis" title={vt.customTestText || vt.voiceCode}>
+                                      {[vt.gender ? genderLabel(vt.gender) : '', vt.voiceCode].filter(Boolean).join(' · ')}
+                                    </div>
+                                    <div className="voice-tile__tags">
+                                      {isCurrent && <Tag color="green">当前</Tag>}
+                                      {vt.isDefault && <Tag color="orange">默认</Tag>}
+                                    </div>
+                                  </div>
+                                  <div className="voice-tile__actions">
+                                    <Tooltip title="试听">
+                                      <Button
+                                        size="small"
+                                        type="text"
+                                        aria-label={`试听 ${vt.displayName}`}
+                                        icon={isPreviewingThis ? <LoadingOutlined /> : <SoundOutlined />}
+                                        disabled={voicePreviewing || status !== 'connected'}
+                                        onClick={() => handlePreview(vt)}
+                                      />
+                                    </Tooltip>
+                                    {!isCurrent && (
+                                      <Button
+                                        size="small"
+                                        type="primary"
+                                        ghost
+                                        loading={voiceBinding && bindingId === vt.id}
+                                        disabled={!canControl || voiceBinding}
+                                        onClick={() => handleBind(vt)}
+                                      >
+                                        绑定
+                                      </Button>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有匹配的音色" />
+                        )}
+                      </div>
+                    ) : (
+                      <Empty
+                        image={Empty.PRESENTED_IMAGE_SIMPLE}
+                        description={voiceLoading ? '正在获取音色列表…' : status === 'connected' ? '没有可选音色' : '连接设备后将自动获取音色列表'}
+                      />
+                    )}
+                  </Card>
+                </div>
               </Col>
             </Row>
 
-            {/* 实时报文 */}
-            <Card
-              title={<Space><CodeOutlined /> 实时报文</Space>}
-              extra={
-                <Space>
-                  <Segmented
-                    size="small"
-                    value={logFilter}
-                    onChange={(v) => setLogFilter(v as 'all' | LogDirection)}
-                    options={[
-                      { label: '全部', value: 'all' },
-                      { label: '接收', value: 'incoming' },
-                      { label: '发送', value: 'outgoing' },
-                      { label: '系统', value: 'system' },
-                    ]}
-                  />
-                  <Popconfirm
-                    title="清空所有报文？"
-                    onConfirm={controller.clearLogs}
-                    disabled={!logs.length}
-                  >
-                    <Button size="small" danger icon={<CloseOutlined />} aria-label="清空所有报文" disabled={!logs.length} />
-                  </Popconfirm>
-                </Space>
-              }
-              style={{ marginTop: 16 }}
-            >
-              {filteredLogs.length ? (
-                <Timeline
-                  style={{ maxHeight: 400, overflowY: 'auto', paddingLeft: 8 }}
-                  items={filteredLogs.map((entry) => {
-                    const expanded = expandedLog === entry.id;
-                    return {
-                      key: entry.id,
-                      dot: <Tag color={LOG_DIR_COLORS[entry.direction]} style={{ margin: 0 }}>{LOG_DIR_LABELS[entry.direction]}</Tag>,
-                      children: (
-                        <div
-                          style={{ cursor: 'pointer' }}
-                          onClick={() => setExpandedLog(expanded ? null : entry.id)}
-                        >
-                          <Space size={8} align="center" style={{ width: '100%' }}>
-                            <Text code style={{ fontSize: 11, flexShrink: 0, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              {entry.type}
-                            </Text>
-                            <Text
-                              type="secondary"
-                              style={{ fontSize: 11, fontFamily: 'monospace', flexShrink: 0, marginLeft: 'auto' }}
-                            >
-                              {formatTime(entry.timestamp)}
-                            </Text>
-                          </Space>
-                          <Paragraph
-                            ellipsis={{ tooltip: entry.raw, rows: 1 }}
-                            style={{ margin: '4px 0 0', fontSize: 11, fontFamily: 'monospace', color: 'rgba(0,0,0,0.45)' }}
-                          >
-                            {entry.raw}
-                          </Paragraph>
-                          {expanded && (
-                            <pre style={{
-                              margin: '8px 0 0',
-                              padding: 12,
-                              background: '#1a1a2e',
-                              color: '#a9dc76',
-                              borderRadius: 6,
-                              fontSize: 11,
-                              lineHeight: 1.6,
-                              overflow: 'auto',
-                              maxHeight: 300,
-                              fontFamily: 'monospace',
-                            }}>
-                              {prettyRaw(entry.raw)}
-                            </pre>
-                          )}
-                        </div>
-                      ),
-                    };
-                  })}
-                />
-              ) : (
-                <Empty
-                  image={Empty.PRESENTED_IMAGE_SIMPLE}
-                  description={logs.length ? '当前筛选下没有报文' : '连接后可在这里核对发送与接收的原始消息'}
-                />
-              )}
-            </Card>
-
             {/* 底部信息 */}
-            <div style={{ padding: '16px 0', textAlign: 'center' }}>
-              <Space size="large">
-                <Text type="secondary" style={{ fontSize: 11 }}>
-                  <ApiOutlined /> {activeUrl || socketPreview}
-                </Text>
-                <Text type="secondary" style={{ fontSize: 11 }}>WebSocket / JSON · 完整快照驱动</Text>
-              </Space>
+            <div className="console-footer">
+              <Text type="secondary" style={{ fontSize: 11 }}>
+                <ApiOutlined /> {activeUrl || socketPreview}
+              </Text>
+              <Text type="secondary" style={{ fontSize: 11 }}>WebSocket / JSON · 完整快照驱动</Text>
             </div>
           </Content>
         </div>
       </Layout>
+
+      {/* 实时报文抽屉 */}
+      <Drawer
+        title={<Space><CodeOutlined /> 实时报文 <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>最近 {logs.length} 条</Text></Space>}
+        open={logDrawerOpen}
+        onClose={closeLogDrawer}
+        size={600}
+        extra={
+          <Space>
+            <Segmented
+              size="small"
+              value={logFilter}
+              onChange={(v) => setLogFilter(v as 'all' | LogDirection)}
+              options={[
+                { label: '全部', value: 'all' },
+                { label: '接收', value: 'incoming' },
+                { label: '发送', value: 'outgoing' },
+                { label: '系统', value: 'system' },
+              ]}
+            />
+            <Popconfirm title="清空所有报文？" onConfirm={controller.clearLogs} disabled={!logs.length}>
+              <Button size="small" danger icon={<CloseOutlined />} aria-label="清空所有报文" disabled={!logs.length} />
+            </Popconfirm>
+          </Space>
+        }
+      >
+        {filteredLogs.length ? (
+          <Timeline
+            style={{ paddingLeft: 8, paddingTop: 8 }}
+            items={filteredLogs.map((entry) => {
+              const expanded = expandedLog === entry.id;
+              return {
+                key: entry.id,
+                dot: <Tag color={LOG_DIR_COLORS[entry.direction]} style={{ margin: 0 }}>{LOG_DIR_LABELS[entry.direction]}</Tag>,
+                children: (
+                  <div style={{ cursor: 'pointer' }} onClick={() => setExpandedLog(expanded ? null : entry.id)}>
+                    <div className="log-head">
+                      <Text code className="ellipsis" style={{ fontSize: 11, maxWidth: 320 }}>{entry.type}</Text>
+                      <Text type="secondary" style={{ fontSize: 11, fontFamily: 'monospace', marginLeft: 'auto' }}>
+                        {formatTime(entry.timestamp)}
+                      </Text>
+                    </div>
+                    {expanded ? (
+                      <pre className="log-raw">{prettyRaw(entry.raw)}</pre>
+                    ) : (
+                      <Paragraph
+                        ellipsis={{ rows: 1 }}
+                        style={{ margin: '4px 0 0', fontSize: 11, fontFamily: 'monospace', color: 'rgba(0,0,0,0.45)' }}
+                      >
+                        {entry.raw}
+                      </Paragraph>
+                    )}
+                  </div>
+                ),
+              };
+            })}
+          />
+        ) : (
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={logs.length ? '当前筛选下没有报文' : '连接后可在这里核对发送与接收的原始消息'}
+          />
+        )}
+      </Drawer>
 
       {/* 全部点位弹窗 */}
       <Modal
@@ -1348,6 +1248,7 @@ function App() {
             <List.Item
               actions={[
                 <Button
+                  key="jump"
                   size="small"
                   disabled={!rp.canNavigate}
                   onClick={() => { requestJump(rp); setPointsModalOpen(false); }}
@@ -1425,7 +1326,7 @@ function App() {
                   canControl &&
                   snapshot.buttons.pauseTask,
                 );
-                const canDirect = Boolean(isNavigation && navPoint && navName && canControl);
+                const canDirect = Boolean(isNavigation && navPoint && navName && canNavigate);
                 return (
                   <List.Item
                     style={{
@@ -1436,13 +1337,12 @@ function App() {
                     }}
                     actions={
                       isNavigation && (canJump || canDirect)
-                        ? [
+                        ? ([
                             canJump && (
                               <Button
                                 key="jump"
                                 size="small"
                                 type="primary"
-                                disabled={!canJump}
                                 onClick={() => {
                                   if (typeof taskNode.step_id === 'number') {
                                     setFlowModalOpen(false);
@@ -1466,7 +1366,6 @@ function App() {
                               <Button
                                 key="direct"
                                 size="small"
-                                disabled={!canDirect}
                                 onClick={() => {
                                   setFlowModalOpen(false);
                                   navigateDirect(navPoint, navName);
@@ -1475,7 +1374,7 @@ function App() {
                                 直达
                               </Button>
                             ),
-                          ].filter(Boolean) as React.ReactElement[]
+                          ].filter(Boolean) as ReactElement[])
                         : undefined
                     }
                   >
@@ -1495,7 +1394,7 @@ function App() {
                         </Avatar>
                       }
                       title={
-                        <Space size={6}>
+                        <Space size={6} wrap>
                           <Tag>{taskTypeLabel(taskNode)}</Tag>
                           <Text strong style={{ fontSize: 13 }}>{taskDisplayName(taskNode)}</Text>
                           {isCurrent && <Tag color="blue">当前</Tag>}
