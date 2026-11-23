@@ -83,7 +83,10 @@ import {
   taskTypeLabel,
 } from './protocol';
 import { useController } from './useController';
-import type { LogDirection } from './useController';
+import type { AsrTarget, LogDirection } from './useController';
+import { useTextHistory } from './textHistory';
+import type { TextHistoryKind } from './textHistory';
+import { isMicrophoneSupported } from './audioCapture';
 
 const { Header, Sider, Content } = Layout;
 const { Text, Paragraph, Title } = Typography;
@@ -244,6 +247,9 @@ function App() {
     resourcesLoading,
     chatTurns,
     chatSending,
+    asrPhase,
+    asrTarget,
+    asrText,
   } = controller;
 
   const [question, setQuestion] = useState('');
@@ -253,6 +259,10 @@ function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [resourceKind, setResourceKind] = useState<DeviceResourceKind>('images');
   const [chatInput, setChatInput] = useState('');
+  const [broadcastText, setBroadcastText] = useState('');
+  const [textHistoryKind, setTextHistoryKind] = useState<TextHistoryKind | null>(null);
+  const broadcastHistory = useTextHistory('broadcast');
+  const questionHistory = useTextHistory('question');
   const [pointsModalOpen, setPointsModalOpen] = useState(false);
   const [flowModalOpen, setFlowModalOpen] = useState(false);
   const [logFilter, setLogFilter] = useState<'all' | LogDirection>('all');
@@ -352,6 +362,10 @@ function App() {
     try {
       controller.sendAction(action, params);
       if (action === 'textQuestion') setQuestion('');
+      if (action === 'playText') setBroadcastText('');
+      // 发送成功才记入最近记录（各 20 条）
+      if (action === 'textQuestion' && params.text?.trim()) questionHistory.add(params.text);
+      if (action === 'playText' && params.text?.trim()) broadcastHistory.add(params.text);
       notify('指令已发送，等待设备状态更新');
       return true;
     } catch (reason) {
@@ -482,6 +496,115 @@ function App() {
     return runtimeDevice.expiresAt ? `${label} · 到期 ${runtimeDevice.expiresAt}` : label;
   })();
 
+  // ===================== 语音输入 + 最近记录 =====================
+  const asrBusy = asrPhase !== 'idle';
+  const micSupported = isMicrophoneSupported();
+
+  /** 语音输入：说完后自动发送识别文本（播报 → playText，提问 → textQuestion）；发送失败时填回输入框 */
+  const startVoiceInput = (target: AsrTarget) => {
+    const setText = target === 'broadcast' ? setBroadcastText : setQuestion;
+    const action: ActionName = target === 'broadcast' ? 'playText' : 'textQuestion';
+    void controller.startAsr(target, {
+      onResult: (recognized) => {
+        const text = recognized.trim().slice(0, 500);
+        if (!text) return;
+        const ok = execute(action, { text });
+        if (!ok) {
+          setText(text);
+          notify('识别结果已填入输入框，设备可控制后可手动发送', 'error');
+        }
+      },
+      onError: (msg) => notify(`语音输入失败：${msg}`, 'error'),
+    });
+  };
+
+  const renderMicButton = (target: AsrTarget) => {
+    if (asrBusy && asrTarget === target) {
+      const finishing = asrPhase === 'finishing';
+      return (
+        <Space size={4}>
+          <Tooltip title="取消语音输入">
+            <Button size="small" icon={<CloseOutlined />} aria-label="取消语音输入" disabled={finishing} onClick={controller.cancelAsr} />
+          </Tooltip>
+          <Button
+            size="small"
+            type="primary"
+            danger
+            icon={finishing ? <LoadingOutlined /> : <CheckOutlined />}
+            disabled={finishing}
+            onClick={controller.stopAsr}
+          >
+            {finishing ? '识别中' : '说完发送'}
+          </Button>
+        </Space>
+      );
+    }
+    const reason = !micSupported
+      ? '浏览器只允许在 https 或 localhost 下使用麦克风'
+      : status !== 'connected'
+        ? '请先连接设备'
+        : asrBusy
+          ? '另一处正在语音输入'
+          : target === 'broadcast'
+            ? '语音输入，说完自动播报（最长 60 秒）'
+            : '语音输入，说完自动提问（最长 60 秒）';
+    return (
+      <Tooltip title={reason}>
+        <Button
+          size="small"
+          icon={<AudioOutlined />}
+          aria-label="语音输入"
+          disabled={!micSupported || status !== 'connected' || asrBusy}
+          onClick={() => startVoiceInput(target)}
+        >
+          语音
+        </Button>
+      </Tooltip>
+    );
+  };
+
+  const renderAsrLive = (target: AsrTarget) =>
+    asrBusy && asrTarget === target ? (
+      <div className="asr-live">
+        <span className={`asr-live__dot${asrPhase === 'recording' ? ' asr-live__dot--on' : ''}`} />
+        <Text type={asrText ? undefined : 'secondary'} style={{ fontSize: 12 }}>
+          {asrText ||
+            (asrPhase === 'starting' ? '正在连接语音识别…' : asrPhase === 'recording' ? '正在聆听，请说话…' : '正在识别…')}
+        </Text>
+      </div>
+    ) : null;
+
+  const renderHistoryButton = (kind: TextHistoryKind) => {
+    const count = (kind === 'broadcast' ? broadcastHistory : questionHistory).items.length;
+    return (
+      <Tooltip title={kind === 'broadcast' ? '最近播报（最多 20 条）' : '最近提问（最多 20 条）'}>
+        <Button type="text" size="small" icon={<HistoryOutlined />} aria-label="最近记录" onClick={() => setTextHistoryKind(kind)}>
+          {count > 0 ? count : null}
+        </Button>
+      </Tooltip>
+    );
+  };
+
+  const activeTextHistory = textHistoryKind === 'question' ? questionHistory : broadcastHistory;
+  const fillFromHistory = (text: string) => {
+    if (textHistoryKind === 'question') setQuestion(text);
+    else setBroadcastText(text);
+    setTextHistoryKind(null);
+  };
+  const resendFromHistory = (text: string) => {
+    const ok = execute(textHistoryKind === 'question' ? 'textQuestion' : 'playText', { text });
+    if (ok) setTextHistoryKind(null);
+  };
+
+  /** 文本播报：device.action + action=playText，设备收到后自行调用 TTS 播报原文（不经过智能体问答） */
+  const submitBroadcast = () => {
+    const text = broadcastText.trim();
+    if (!text) return;
+    execute('playText', { text });
+  };
+  /** 播报中 interruptDialogue 可用，用它停止当前播报 */
+  const canStopBroadcast = canControl && snapshot?.buttons.interruptDialogue === true;
+
   const refreshResources = () => {
     controller.fetchResources().catch((reason: unknown) => {
       notify(reason instanceof Error ? `读取设备资源失败：${reason.message}` : '读取设备资源失败', 'error');
@@ -528,6 +651,77 @@ function App() {
   return (
     <AntApp>
       {contextHolder}
+      <Modal
+        title={
+          <Space>
+            <HistoryOutlined />
+            {textHistoryKind === 'question' ? '最近提问' : '最近播报'}
+            <Text type="secondary" style={{ fontSize: 12, fontWeight: 'normal' }}>（最多 20 条，保存在本浏览器）</Text>
+          </Space>
+        }
+        open={textHistoryKind !== null}
+        onCancel={() => setTextHistoryKind(null)}
+        width={600}
+        footer={
+          <Space>
+            {activeTextHistory.items.length > 0 && (
+              <Popconfirm
+                title="清空全部记录？"
+                okText="清空"
+                cancelText="取消"
+                onConfirm={() => {
+                  activeTextHistory.clear();
+                  notify('记录已清空');
+                }}
+              >
+                <Button danger>清空记录</Button>
+              </Popconfirm>
+            )}
+            <Button onClick={() => setTextHistoryKind(null)}>关闭</Button>
+          </Space>
+        }
+      >
+        {activeTextHistory.items.length === 0 ? (
+          <Empty description={textHistoryKind === 'question' ? '暂无提问记录，发送成功后自动保存' : '暂无播报记录，播报成功后自动保存'} />
+        ) : (
+          <List
+            className="text-history-list"
+            dataSource={activeTextHistory.items}
+            renderItem={(entry) => (
+              <List.Item
+                actions={[
+                  <Button key="fill" size="small" onClick={() => fillFromHistory(entry.text)}>
+                    填入
+                  </Button>,
+                  <Tooltip key="send" title={canControl ? undefined : '设备不可控制'}>
+                    <Button size="small" type="primary" disabled={!canControl} onClick={() => resendFromHistory(entry.text)}>
+                      {textHistoryKind === 'question' ? '提问' : '播报'}
+                    </Button>
+                  </Tooltip>,
+                  <Button
+                    key="del"
+                    type="text"
+                    size="small"
+                    danger
+                    icon={<DeleteOutlined />}
+                    aria-label="删除这条记录"
+                    onClick={() => activeTextHistory.remove(entry.text)}
+                  />,
+                ]}
+              >
+                <List.Item.Meta
+                  title={
+                    <Paragraph className="text-history-item__text" style={{ margin: 0, fontWeight: 'normal' }} ellipsis={{ rows: 2, tooltip: entry.text }}>
+                      {entry.text}
+                    </Paragraph>
+                  }
+                  description={<Text type="secondary" style={{ fontSize: 12 }}>{entry.at ? formatTime(entry.at) : '—'}</Text>}
+                />
+              </List.Item>
+            )}
+          />
+        )}
+      </Modal>
       <Modal
         title={<Space><HistoryOutlined />历史设备号</Space>}
         open={historyOpen}
@@ -1264,8 +1458,63 @@ function App() {
                     ))}
                   </Card>
 
+                  {/* 文本播报：device.action / playText，设备原样念出文本 */}
+                  <Card
+                    size="small"
+                    title={
+                      <Space>
+                        <SoundOutlined /> 文本播报
+                        <Tooltip title="设备原样念出这段文字，不经过智能体问答">
+                          <QuestionCircleOutlined style={{ color: 'rgba(0,0,0,0.35)' }} />
+                        </Tooltip>
+                      </Space>
+                    }
+                    extra={renderHistoryButton('broadcast')}
+                  >
+                    <Input.TextArea
+                      value={broadcastText}
+                      onChange={(e) => setBroadcastText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                          e.preventDefault();
+                          if (canControl && broadcastText.trim()) submitBroadcast();
+                        }
+                      }}
+                      placeholder="输入要播报的文字，例如：欢迎各位领导莅临参观指导。"
+                      maxLength={500}
+                      autoSize={{ minRows: 2, maxRows: 5 }}
+                    />
+                    {renderAsrLive('broadcast')}
+                    <div className="question-footer">
+                      <Text type="secondary" style={{ fontSize: 11 }}>Ctrl + Enter 播报 · {broadcastText.length}/500</Text>
+                      <Space size={6}>
+                        {renderMicButton('broadcast')}
+                        <Tooltip title={canStopBroadcast ? '打断当前播报' : '当前没有可打断的播报'}>
+                          <Button
+                            size="small"
+                            danger
+                            icon={<StopOutlined />}
+                            disabled={!canStopBroadcast}
+                            onClick={() => execute('interruptDialogue')}
+                          >
+                            停止
+                          </Button>
+                        </Tooltip>
+                        <Button
+                          type="primary"
+                          size="small"
+                          icon={<SoundOutlined />}
+                          disabled={!canControl || !broadcastText.trim()}
+                          onClick={submitBroadcast}
+                        >
+                          播报
+                        </Button>
+                      </Space>
+                    </div>
+                  </Card>
+
                   {/* 文本提问 */}
-                  <Card size="small" title={<Space><MessageOutlined /> 文本提问</Space>}>
+                  <Card size="small" title={<Space><MessageOutlined /> 文本提问</Space>} extra={renderHistoryButton('question')}>
                     <form onSubmit={submitQuestion}>
                       <Input.TextArea
                         value={question}
@@ -1280,11 +1529,15 @@ function App() {
                         maxLength={500}
                         autoSize={{ minRows: 2, maxRows: 5 }}
                       />
+                      {renderAsrLive('question')}
                       <div className="question-footer">
                         <Text type="secondary" style={{ fontSize: 11 }}>Ctrl + Enter 发送 · {question.length}/500</Text>
-                        <Button type="primary" size="small" htmlType="submit" icon={<SendOutlined />} disabled={!canControl || !question.trim()}>
-                          发送
-                        </Button>
+                        <Space size={6}>
+                          {renderMicButton('question')}
+                          <Button type="primary" size="small" htmlType="submit" icon={<SendOutlined />} disabled={!canControl || !question.trim()}>
+                            发送
+                          </Button>
+                        </Space>
                       </div>
                     </form>
 

@@ -16,6 +16,7 @@ export type ActionName =
   | ButtonKey
   | 'jumpToNavigationStep'
   | 'textQuestion'
+  | 'playText'
   | 'navigateToPoint'
   | 'getState';
 
@@ -1064,4 +1065,37 @@ export function parseVoiceChatResult(source: unknown): VoiceChatResult {
     audioBase64: typeof data.audioBase64 === 'string' && data.audioBase64 ? data.audioBase64 : null,
     audioContentType: str(data.audioContentType) || 'audio/wav',
   };
+}
+
+// ===================== 流式语音识别（/ws/realtime/ asr.session.*） =====================
+
+/**
+ * 解析 asr.transcript。文本取 payload.text / transcript / sentence（或 payload.result 下同名字段）；
+ * isFinal 取 isFinal / final / is_final / sentenceEnd，没有标记时为 null（按整段覆盖处理）。
+ */
+export function parseAsrTranscript(message: unknown): { text: string; isFinal: boolean | null } | null {
+  if (!isRecord(message)) return null;
+  const payload = isRecord(message.payload) ? message.payload : message;
+  const pick = (holder: Record<string, unknown>): string | null => {
+    for (const key of ['text', 'transcript', 'sentence']) {
+      if (typeof holder[key] === 'string') return holder[key] as string;
+    }
+    return null;
+  };
+  const result = isRecord(payload.result) ? payload.result : null;
+  const text = pick(payload) ?? (result ? pick(result) : null);
+  if (text === null) return null;
+  const flags = [payload.isFinal, payload.final, payload.is_final, payload.sentenceEnd, payload.sentence_end, result?.isFinal, result?.sentenceEnd];
+  const flag = flags.find((value) => typeof value === 'boolean');
+  return { text, isFinal: typeof flag === 'boolean' ? flag : null };
+}
+
+/** 读取 asr.error / error 消息里的说明 */
+export function readAsrError(message: unknown): string {
+  if (!isRecord(message)) return '';
+  const payload = isRecord(message.payload) ? message.payload : {};
+  const err = isRecord(message.error) ? message.error : isRecord(payload.error) ? payload.error : payload;
+  const msg = typeof err.message === 'string' ? err.message : typeof payload.message === 'string' ? payload.message : '';
+  const code = typeof err.code === 'string' || typeof err.code === 'number' ? String(err.code) : '';
+  return msg && code ? `${msg}（${code}）` : msg || code;
 }

@@ -21,14 +21,18 @@ import {
   isErrorResponse,
   isVoiceBoundMessage,
   parseAsrDeviceStatus,
+  parseAsrTranscript,
   parseFlowSnapshot,
   parsePointGroup,
   parseTaskModes,
   parseTtsOptions,
   parseVoiceChatResult,
+  readAsrError,
   readCloudError,
   runtimeConfigAction,
 } from './protocol';
+import { describeMicError, startPcmCapture } from './audioCapture';
+import type { PcmCapture } from './audioCapture';
 import type {
   ActionName,
   AsrDeviceStatus,
@@ -116,6 +120,46 @@ async function readJson(resp: Response): Promise<unknown> {
   }
 }
 
+/** 语音输入：idle 空闲 / starting 等待 asr.ready / recording 录音中 / finishing 已结束录音，等待识别结果 */
+export type AsrPhase = 'idle' | 'starting' | 'recording' | 'finishing';
+/** 语音输入的目标输入框 */
+export type AsrTarget = 'broadcast' | 'question';
+
+export interface AsrCallbacks {
+  onResult: (text: string) => void;
+  onError: (message: string) => void;
+}
+
+interface AsrSession {
+  requestId: string;
+  target: AsrTarget;
+  ready: boolean;
+  finishRequested: boolean;
+  finishSent: boolean;
+  queue: ArrayBuffer[];
+  capture: PcmCapture | null;
+  committed: string[];
+  partial: string;
+  timer: ReturnType<typeof setTimeout> | null;
+  maxTimer: ReturnType<typeof setTimeout> | null;
+  callbacks: AsrCallbacks;
+}
+
+const ASR_READY_TIMEOUT = 8_000;
+const ASR_RESULT_TIMEOUT = 15_000;
+const ASR_MAX_DURATION = 60_000;
+const ASR_DONE_TYPES = /^asr\.(done|complete|completed|finished|final|session\.(done|complete|completed))$/;
+
+function asrCombinedText(session: AsrSession): string {
+  return `${session.committed.join('')}${session.partial}`.trim();
+}
+
+function sendQueuedAudio(socket: WebSocket | null, session: AsrSession) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  for (const chunk of session.queue) socket.send(chunk);
+  session.queue = [];
+}
+
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'reconnecting' | 'connected';
 export type LogDirection = 'incoming' | 'outgoing' | 'system';
 
@@ -179,6 +223,10 @@ export function useController() {
   const [chatTurns, setChatTurns] = useState<ChatTestTurn[]>([]);
   const [chatSending, setChatSending] = useState(false);
   const chatSessionIdRef = useRef('');
+  const [asrPhase, setAsrPhase] = useState<AsrPhase>('idle');
+  const [asrTarget, setAsrTarget] = useState<AsrTarget | null>(null);
+  const [asrText, setAsrText] = useState('');
+  const asrRef = useRef<AsrSession | null>(null);
   const chatCounterRef = useRef(0);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -365,6 +413,189 @@ export function useController() {
     [clearVoiceBindTimer, fetchDeviceVoice],
   );
 
+  // ===================== 语音输入（云端流式 ASR） =====================
+
+  const sendAsrCommand = useCallback(
+    (type: string, session: AsrSession, id?: string) => {
+      const socket = wsRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+      const message = {
+        type,
+        id: id ?? `${session.requestId}-${type.split('.').pop()}`,
+        payload: { deviceCode: configRef.current.deviceCode.trim(), requestId: session.requestId, traceId: '' },
+      };
+      const raw = JSON.stringify(message);
+      socket.send(raw);
+      appendLog('outgoing', type, raw);
+      return true;
+    },
+    [appendLog],
+  );
+
+  /** 结束当前语音会话；outcome 为 null 表示静默取消 */
+  const endAsrSession = useCallback((outcome: { text?: string; error?: string } | null) => {
+    const session = asrRef.current;
+    if (!session) return;
+    asrRef.current = null;
+    if (session.timer) clearTimeout(session.timer);
+    if (session.maxTimer) clearTimeout(session.maxTimer);
+    session.capture?.stop();
+    setAsrPhase('idle');
+    setAsrTarget(null);
+    setAsrText('');
+    if (!outcome) return;
+    if (outcome.error) session.callbacks.onError(outcome.error);
+    else if (outcome.text) session.callbacks.onResult(outcome.text);
+    else session.callbacks.onError('没有识别到语音内容');
+  }, []);
+
+  const sendAsrFinish = useCallback(
+    (session: AsrSession) => {
+      if (session.finishSent) return;
+      sendQueuedAudio(wsRef.current, session);
+      session.finishSent = true;
+      sendAsrCommand('asr.session.finish', session);
+      if (session.timer) clearTimeout(session.timer);
+      session.timer = setTimeout(() => {
+        if (asrRef.current !== session) return;
+        const text = asrCombinedText(session);
+        endAsrSession(text ? { text } : { error: '识别超时，未收到识别结果' });
+      }, ASR_RESULT_TIMEOUT);
+    },
+    [endAsrSession, sendAsrCommand],
+  );
+
+  /** 说完了：停止录音并提交，等待识别结果 */
+  const stopAsr = useCallback(() => {
+    const session = asrRef.current;
+    if (!session || session.finishRequested) return;
+    session.finishRequested = true;
+    session.capture?.stop(); // 先把剩余音频交出去
+    setAsrPhase('finishing');
+    if (session.ready) sendAsrFinish(session);
+  }, [sendAsrFinish]);
+
+  /** 取消语音输入，不使用识别结果 */
+  const cancelAsr = useCallback(() => {
+    const session = asrRef.current;
+    if (!session) return;
+    sendAsrCommand('asr.session.cancel', session);
+    endAsrSession(null);
+  }, [endAsrSession, sendAsrCommand]);
+
+  /**
+   * 开始语音输入：先打开麦克风，再发 asr.session.start；收到 asr.ready 前的音频先缓存。
+   * 结果和错误都通过 callbacks 返回，不抛异常。
+   */
+  const startAsr = useCallback(
+    async (target: AsrTarget, callbacks: AsrCallbacks) => {
+      if (asrRef.current) {
+        callbacks.onError('已有语音输入正在进行');
+        return;
+      }
+      const socket = wsRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        callbacks.onError('WebSocket 尚未连接');
+        return;
+      }
+      if (!configRef.current.deviceCode.trim()) {
+        callbacks.onError('设备号不能为空');
+        return;
+      }
+      const session: AsrSession = {
+        requestId: `web-asr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        target,
+        ready: false,
+        finishRequested: false,
+        finishSent: false,
+        queue: [],
+        capture: null,
+        committed: [],
+        partial: '',
+        timer: null,
+        maxTimer: null,
+        callbacks,
+      };
+      asrRef.current = session;
+      setAsrTarget(target);
+      setAsrText('');
+      setAsrPhase('starting');
+
+      let capture: PcmCapture;
+      try {
+        capture = await startPcmCapture((chunk) => {
+          if (asrRef.current !== session || session.finishSent) return;
+          const ws = wsRef.current;
+          if (session.ready && ws && ws.readyState === WebSocket.OPEN) ws.send(chunk);
+          else session.queue.push(chunk);
+        });
+      } catch (reason) {
+        if (asrRef.current === session) endAsrSession({ error: describeMicError(reason) });
+        return;
+      }
+      if (asrRef.current !== session) {
+        capture.stop();
+        return;
+      }
+      session.capture = capture;
+      if (!sendAsrCommand('asr.session.start', session, session.requestId)) {
+        endAsrSession({ error: 'WebSocket 已断开' });
+        return;
+      }
+      session.timer = setTimeout(() => {
+        if (asrRef.current !== session || session.ready) return;
+        sendAsrCommand('asr.session.cancel', session);
+        endAsrSession({ error: `语音识别服务未就绪（${ASR_READY_TIMEOUT / 1000} 秒超时）` });
+      }, ASR_READY_TIMEOUT);
+      session.maxTimer = setTimeout(() => {
+        if (asrRef.current === session) stopAsr();
+      }, ASR_MAX_DURATION);
+    },
+    [endAsrSession, sendAsrCommand, stopAsr],
+  );
+
+  /** 处理 asr.* 消息（同一连接上同一时间只有一个语音会话） */
+  const handleAsrMessage = useCallback(
+    (type: string, message: unknown) => {
+      const session = asrRef.current;
+      if (!session) return;
+      if (type === 'asr.ready') {
+        if (session.ready) return;
+        session.ready = true;
+        if (session.timer) {
+          clearTimeout(session.timer);
+          session.timer = null;
+        }
+        sendQueuedAudio(wsRef.current, session);
+        if (session.finishRequested) sendAsrFinish(session);
+        else setAsrPhase('recording');
+        return;
+      }
+      if (type === 'asr.transcript') {
+        const transcript = parseAsrTranscript(message);
+        if (!transcript) return;
+        if (transcript.isFinal === true) {
+          session.committed.push(transcript.text);
+          session.partial = '';
+        } else {
+          session.partial = transcript.text;
+        }
+        setAsrText(asrCombinedText(session));
+        return;
+      }
+      if (type === 'asr.error') {
+        endAsrSession({ error: readAsrError(message) || '语音识别失败' });
+        return;
+      }
+      if (ASR_DONE_TYPES.test(type)) {
+        let text = asrCombinedText(session);
+        if (!text) text = parseAsrTranscript(message)?.text.trim() ?? '';
+        endAsrSession({ text });
+      }
+    },
+    [endAsrSession, sendAsrFinish],
+  );
+
   const clearRealtime = useCallback(() => {
     clearQueryTimer();
     setIsQuerying(false);
@@ -395,8 +626,9 @@ export function useController() {
     setChatTurns([]);
     setChatSending(false);
     chatSessionIdRef.current = '';
+    if (asrRef.current) endAsrSession({ error: '连接已断开，语音输入已取消' });
     clearVoiceBindTimer();
-  }, [clearQueryTimer, clearVoiceBindTimer]);
+  }, [clearQueryTimer, clearVoiceBindTimer, endAsrSession]);
 
   const sendAction = useCallback(
     (action: ActionName, params: ActionParams = {}): DeviceAction => {
@@ -424,6 +656,9 @@ export function useController() {
       if (action === 'textQuestion' && !params.text?.trim()) {
         throw new Error('问题内容不能为空');
       }
+      if (action === 'playText' && !params.text?.trim()) {
+        throw new Error('播报内容不能为空');
+      }
       if (action === 'navigateToPoint') {
         if (!currentSnapshot?.deviceInfo.robotConnected) throw new Error('机器人尚未连接');
         if (!params.point?.trim() || !params.pointName?.trim()) {
@@ -432,7 +667,7 @@ export function useController() {
       }
 
       const normalizedParams: ActionParams = { ...params };
-      if (action === 'textQuestion') normalizedParams.text = params.text?.trim();
+      if (action === 'textQuestion' || action === 'playText') normalizedParams.text = params.text?.trim();
       if (action === 'navigateToPoint') {
         normalizedParams.point = params.point?.trim();
         normalizedParams.pointName = params.pointName?.trim();
@@ -802,7 +1037,13 @@ export function useController() {
           return;
         }
         const type = messageType(message);
-        appendLog('incoming', type, raw);
+        // 识别中间结果很多，不记入实时报文，避免挤掉其他报文
+        if (type !== 'asr.transcript') appendLog('incoming', type, raw);
+
+        if (type.startsWith('asr.')) {
+          handleAsrMessage(type, message);
+          return;
+        }
 
         if (type === 'device.task_flow.state') {
           try {
@@ -895,6 +1136,10 @@ export function useController() {
 
         if (isErrorResponse(message)) {
           const err = message as { type: 'error'; id: string | null; error: { code: string; message: string } };
+          if (asrRef.current && typeof err.id === 'string' && err.id.startsWith(asrRef.current.requestId)) {
+            endAsrSession({ error: `${err.error?.message || '语音识别失败'}${err.error?.code ? `（${err.error.code}）` : ''}` });
+            return;
+          }
           if (err.id === pointGroupReqIdRef.current) {
             setPointGroupLoading(false);
             pointGroupReqIdRef.current = null;
@@ -946,7 +1191,7 @@ export function useController() {
         }
       };
     },
-    [appendLog, applyBoundVoice, applyDeviceVoice, applyRuntimeDevice, applyRuntimePoints, clearRealtime, clearQueryTimer, clearVoiceBindTimer, fetchAsrStatus, fetchDeviceVoice, fetchPoints, fetchTaskModes, fetchVoices, rememberDevice, requestState],
+    [appendLog, applyBoundVoice, applyDeviceVoice, applyRuntimeDevice, applyRuntimePoints, clearRealtime, clearQueryTimer, clearVoiceBindTimer, fetchAsrStatus, fetchDeviceVoice, fetchPoints, fetchTaskModes, fetchVoices, endAsrSession, handleAsrMessage, rememberDevice, requestState],
   );
   connectRef.current = connect;
 
@@ -976,6 +1221,7 @@ export function useController() {
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       if (queryTimerRef.current) clearTimeout(queryTimerRef.current);
       if (voiceBindTimerRef.current) clearTimeout(voiceBindTimerRef.current);
+      asrRef.current?.capture?.stop();
       const socket = wsRef.current;
       if (socket) {
         socket.onopen = null;
@@ -1027,6 +1273,12 @@ export function useController() {
     fetchResources,
     sendChatTest,
     resetChatTest,
+    asrPhase,
+    asrTarget,
+    asrText,
+    startAsr,
+    stopAsr,
+    cancelAsr,
     removeDeviceHistory: (code: string) => updateDeviceHistory((list) => list.filter((entry) => entry.code !== code)),
     clearDeviceHistory: () => updateDeviceHistory(() => []),
     connect,
