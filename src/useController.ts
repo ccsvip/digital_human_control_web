@@ -149,6 +149,16 @@ export interface PresenceAlertConfig {
 
 export type PresenceKind = 'online' | 'offline';
 
+/** 一次设备上线 / 离线事件（用于界面弹出通知） */
+export interface PresenceEvent {
+  id: number;
+  kind: PresenceKind;
+  text: string;
+  deviceName: string;
+  deviceCode: string;
+  at: string;
+}
+
 export const DEFAULT_PRESENCE_ALERT: PresenceAlertConfig = {
   enabled: true,
   onlineText: '{name}已上线',
@@ -333,6 +343,8 @@ export function useController() {
   const [presenceSpeaking, setPresenceSpeaking] = useState(false);
   /** 设备在线状态（心跳）：来自 device.status 轮询 / 推送、devices.events、screen_online/offline、状态快照 */
   const [deviceOnline, setDeviceOnline] = useState<boolean | null>(null);
+  const [presenceEvent, setPresenceEvent] = useState<PresenceEvent | null>(null);
+  const presenceEventIdRef = useRef(0);
   const [asrStatus, setAsrStatus] = useState<AsrDeviceStatus | null>(null);
   const [asrError, setAsrError] = useState<string | null>(null);
   const [asrLoading, setAsrLoading] = useState(false);
@@ -1547,6 +1559,15 @@ export function useController() {
     const kind: PresenceKind = deviceOnline ? 'online' : 'offline';
     const text = presenceText(kind);
     appendLog('system', kind === 'online' ? 'device_online' : 'device_offline', `设备${kind === 'online' ? '上线' : '离线'}：${text}`);
+    presenceEventIdRef.current += 1;
+    setPresenceEvent({
+      id: presenceEventIdRef.current,
+      kind,
+      text,
+      deviceName: lastDeviceNameRef.current,
+      deviceCode: activeDeviceCodeRef.current,
+      at: new Date().toISOString(),
+    });
     if (!presenceAlertRef.current.enabled || !text) return undefined;
     speakAlertText(text).catch((reason: unknown) => {
       const msg = reason instanceof Error ? reason.message : '未知错误';
@@ -1587,6 +1608,7 @@ export function useController() {
     presenceAlert,
     presenceSpeaking,
     deviceOnline,
+    presenceEvent,
     setPresenceAlert,
     testPresenceAlert,
     stopPresenceAlert,

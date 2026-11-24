@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent, ReactElement, ReactNode } from 'react';
 import {
   Alert,
@@ -28,6 +28,7 @@ import {
   Tooltip,
   Typography,
   message,
+  notification,
 } from 'antd';
 import {
   ApiOutlined,
@@ -247,6 +248,7 @@ function App() {
     presenceAlert,
     presenceSpeaking,
     deviceOnline,
+    presenceEvent,
     asrStatus,
     asrError,
     asrLoading,
@@ -280,6 +282,7 @@ function App() {
   const [logDrawerOpen, setLogDrawerOpen] = useState(false);
   const [lastSeenLogId, setLastSeenLogId] = useState<string | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
+  const [notificationApi, notificationHolder] = notification.useNotification({ placement: 'bottomRight', maxCount: 3 });
   const [voiceKeyword, setVoiceKeyword] = useState('');
   const [voiceGender, setVoiceGender] = useState<string>('all');
   const [previewingId, setPreviewingId] = useState<number | null>(null);
@@ -531,6 +534,29 @@ function App() {
     notify('上下线提醒已保存');
   };
 
+  // 设备上线 / 离线：右下角弹出通知（与语音提醒开关无关，始终提示）
+  useEffect(() => {
+    if (!presenceEvent) return;
+    const online = presenceEvent.kind === 'online';
+    const name = presenceEvent.deviceName || maskDeviceCode(presenceEvent.deviceCode) || '设备';
+    const open = online ? notificationApi.success : notificationApi.error;
+    open({
+      key: `presence-${presenceEvent.deviceCode}`,
+      message: online ? '设备已上线' : '设备已离线',
+      description: (
+        <Space orientation="vertical" size={2}>
+          <Text strong>{name}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>{formatTime(presenceEvent.at)}</Text>
+        </Space>
+      ),
+      placement: 'bottomRight',
+      duration: online ? 4.5 : 8,
+      showProgress: true,
+      pauseOnHover: true,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presenceEvent]);
+
   const suggestedQuestions = runtimeDevice?.suggestedQuestions ?? [];
 
   const askSuggested = (text: string) => {
@@ -714,6 +740,7 @@ function App() {
   return (
     <AntApp>
       {contextHolder}
+      {notificationHolder}
       <Modal
         title={
           <Space>
