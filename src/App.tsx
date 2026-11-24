@@ -82,7 +82,7 @@ import {
   taskDisplayName,
   taskTypeLabel,
 } from './protocol';
-import { useController } from './useController';
+import { serverHistoryKey, useController } from './useController';
 import type { AsrTarget, LogDirection } from './useController';
 import { useTextHistory } from './textHistory';
 import type { TextHistoryKind } from './textHistory';
@@ -240,6 +240,7 @@ function App() {
     previewText,
     runtimeDevice,
     deviceHistory,
+    serverHistory,
     asrStatus,
     asrError,
     asrLoading,
@@ -257,6 +258,7 @@ function App() {
   const [pointName, setPointName] = useState('');
   const [showDeviceCode, setShowDeviceCode] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [serverHistoryOpen, setServerHistoryOpen] = useState(false);
   const [resourceKind, setResourceKind] = useState<DeviceResourceKind>('images');
   const [chatInput, setChatInput] = useState('');
   const [broadcastText, setBroadcastText] = useState('');
@@ -478,6 +480,24 @@ function App() {
     updateConfig('deviceCode', code);
     setHistoryOpen(false);
     notify(`已选择设备：${entry?.name || maskDeviceCode(code)}`);
+  };
+
+  const currentServerKey = serverHistoryKey(config.server, config.port);
+  const formatServer = (server: string, port: string) => (port ? `${server.replace(/\/+$/, '')}:${port}` : server);
+
+  const selectHistoryServer = (server: string, port: string) => {
+    setConfig((current) => ({ ...current, server, port }));
+    setServerHistoryOpen(false);
+    notify(`已切换服务器：${formatServer(server, port)}`);
+  };
+
+  const saveCurrentServer = () => {
+    if (!config.server.trim()) {
+      notify('请先填写服务器地址', 'error');
+      return;
+    }
+    controller.saveServerToHistory(config.server, config.port);
+    notify('已保存当前服务器地址');
   };
 
   const suggestedQuestions = runtimeDevice?.suggestedQuestions ?? [];
@@ -817,6 +837,112 @@ function App() {
           />
         )}
       </Modal>
+      <Modal
+        title={<Space><HistoryOutlined />历史服务器地址</Space>}
+        open={serverHistoryOpen}
+        onCancel={() => setServerHistoryOpen(false)}
+        width={520}
+        footer={
+          <Space>
+            {serverHistory.length > 0 && (
+              <Popconfirm
+                title="清空全部历史服务器地址？"
+                okText="清空"
+                cancelText="取消"
+                onConfirm={() => {
+                  controller.clearServerHistory();
+                  notify('服务器历史已清空');
+                }}
+              >
+                <Button danger>清空历史</Button>
+              </Popconfirm>
+            )}
+            <Button onClick={saveCurrentServer}>保存当前地址</Button>
+            <Button onClick={() => setServerHistoryOpen(false)}>关闭</Button>
+          </Space>
+        }
+      >
+        {serverHistory.length === 0 ? (
+          <Empty description="暂无历史服务器地址，连接成功后会自动记录" />
+        ) : (
+          <List
+            className="device-history-list"
+            dataSource={serverHistory}
+            renderItem={(entry) => {
+              const isCurrent = serverHistoryKey(entry.server, entry.port) === currentServerKey;
+              const address = formatServer(entry.server, entry.port);
+              return (
+                <List.Item
+                  className={`device-history-row${isCurrent ? ' device-history-row--active' : ''}`}
+                  onClick={() => selectHistoryServer(entry.server, entry.port)}
+                  actions={[
+                    <Button
+                      key="use"
+                      type={isCurrent ? 'default' : 'primary'}
+                      size="small"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        selectHistoryServer(entry.server, entry.port);
+                      }}
+                    >
+                      {isCurrent ? '当前' : '使用'}
+                    </Button>,
+                    <Popconfirm
+                      key="del"
+                      title="删除这条记录？"
+                      okText="删除"
+                      cancelText="取消"
+                      onConfirm={(e) => {
+                        e?.stopPropagation();
+                        controller.removeServerHistory(entry.server, entry.port);
+                      }}
+                      onCancel={(e) => e?.stopPropagation()}
+                    >
+                      <Button
+                        type="text"
+                        size="small"
+                        danger
+                        icon={<DeleteOutlined />}
+                        aria-label="删除该历史记录"
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    </Popconfirm>,
+                  ]}
+                >
+                  <List.Item.Meta
+                    avatar={<Avatar icon={<LinkOutlined />} />}
+                    title={
+                      <Space size={6} onClick={(e) => e.stopPropagation()}>
+                        <Text
+                          strong
+                          editable={{
+                            tooltip: '编辑备注',
+                            text: entry.name,
+                            onChange: (value) => controller.renameServerHistory(entry.server, entry.port, value),
+                          }}
+                        >
+                          {entry.name || '未命名服务器'}
+                        </Text>
+                        {isCurrent && <Tag color="blue">当前</Tag>}
+                      </Space>
+                    }
+                    description={
+                      <Space orientation="vertical" size={0}>
+                        <Text type="secondary" copyable={{ text: address, tooltips: ['复制地址', '已复制'] }} className="device-history-item__code">
+                          {address}
+                        </Text>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          最近连接：{entry.lastUsedAt ? formatTime(entry.lastUsedAt) : '—'}
+                        </Text>
+                      </Space>
+                    }
+                  />
+                </List.Item>
+              );
+            }}
+          />
+        )}
+      </Modal>
       <Layout className="console-shell">
         {/* 左侧连接配置面板 */}
         <Sider width={300} theme="light" className="console-sidebar">
@@ -848,25 +974,42 @@ function App() {
                 </div>
 
                 <Form layout="vertical" size="small">
-                  <Form.Item label="服务器地址">
-                    <Input
-                      prefix={<LinkOutlined />}
-                      value={config.server}
-                      onChange={(e) => updateConfig('server', e.target.value)}
-                      placeholder="http://192.168.3.248"
-                      autoComplete="off"
-                    />
-                  </Form.Item>
-
-                  <Form.Item label="端口">
-                    <Input
-                      prefix={<ApiOutlined />}
-                      value={config.port}
-                      onChange={(e) => updateConfig('port', e.target.value)}
-                      placeholder="8880"
-                      inputMode="numeric"
-                      autoComplete="off"
-                    />
+                  <Form.Item label="服务器地址 / 端口">
+                    <Space.Compact style={{ width: '100%' }}>
+                      <Input
+                        prefix={<LinkOutlined />}
+                        value={config.server}
+                        onChange={(e) => updateConfig('server', e.target.value)}
+                        placeholder="http://192.168.3.248"
+                        aria-label="服务器地址"
+                        autoComplete="off"
+                        style={{ flex: 1, minWidth: 0 }}
+                        suffix={
+                          <Tooltip title="历史服务器地址">
+                            <Button
+                              type="text"
+                              size="small"
+                              icon={<HistoryOutlined />}
+                              aria-label="历史服务器地址"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setServerHistoryOpen(true);
+                              }}
+                            />
+                          </Tooltip>
+                        }
+                      />
+                      <Input
+                        value={config.port}
+                        onChange={(e) => updateConfig('port', e.target.value)}
+                        placeholder="8880"
+                        aria-label="端口"
+                        inputMode="numeric"
+                        autoComplete="off"
+                        style={{ width: 72, flex: 'none' }}
+                      />
+                    </Space.Compact>
                   </Form.Item>
 
                   <Form.Item

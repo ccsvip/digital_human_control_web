@@ -93,6 +93,46 @@ function saveDeviceHistory(list: DeviceHistoryEntry[]) {
   }
 }
 
+const SERVER_HISTORY_KEY = 'digital-human-controller.server-history.v1';
+const SERVER_HISTORY_LIMIT = 10;
+
+/** 服务器地址历史记录（服务器地址 + 端口作为一条记录，连接成功后自动记录） */
+export interface ServerHistoryEntry {
+  server: string;
+  port: string;
+  /** 备注名称，可选 */
+  name: string;
+  lastUsedAt: string;
+}
+
+export const serverHistoryKey = (server: string, port: string) => `${server.trim().replace(/\/+$/, '')}|${port.trim()}`;
+
+function loadServerHistory(): ServerHistoryEntry[] {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SERVER_HISTORY_KEY) ?? '[]') as unknown;
+    if (!Array.isArray(saved)) return [];
+    return saved
+      .filter((item): item is ServerHistoryEntry => typeof item?.server === 'string' && item.server.trim() !== '')
+      .map((item) => ({
+        server: item.server.trim(),
+        port: typeof item.port === 'string' ? item.port.trim() : String(item.port ?? ''),
+        name: typeof item.name === 'string' ? item.name : '',
+        lastUsedAt: typeof item.lastUsedAt === 'string' ? item.lastUsedAt : '',
+      }))
+      .slice(0, SERVER_HISTORY_LIMIT);
+  } catch {
+    return [];
+  }
+}
+
+function saveServerHistory(list: ServerHistoryEntry[]) {
+  try {
+    localStorage.setItem(SERVER_HISTORY_KEY, JSON.stringify(list));
+  } catch {
+    // 浏览器不允许存储时忽略，仅影响历史记录
+  }
+}
+
 function sameVoiceId(a: unknown, b: unknown): boolean {
   if (a === null || a === undefined || b === null || b === undefined) return false;
   const na = Number(a);
@@ -215,6 +255,7 @@ export function useController() {
   const [previewText, setPreviewText] = useState<string | null>(null);
   const [runtimeDevice, setRuntimeDevice] = useState<RuntimeDeviceInfo | null>(null);
   const [deviceHistory, setDeviceHistory] = useState<DeviceHistoryEntry[]>(loadDeviceHistory);
+  const [serverHistory, setServerHistory] = useState<ServerHistoryEntry[]>(loadServerHistory);
   const [asrStatus, setAsrStatus] = useState<AsrDeviceStatus | null>(null);
   const [asrError, setAsrError] = useState<string | null>(null);
   const [asrLoading, setAsrLoading] = useState(false);
@@ -248,6 +289,8 @@ export function useController() {
   const deviceVoiceRef = useRef<DeviceVoiceInfo | null>(null);
   /** 当前连接使用的设备号（用于把设备名称写回历史记录） */
   const activeDeviceCodeRef = useRef('');
+  /** 当前连接使用的服务器地址与端口（连接成功后写入服务器历史） */
+  const activeServerRef = useRef({ server: '', port: '' });
 
   configRef.current = config;
   snapshotRef.current = snapshot;
@@ -273,6 +316,35 @@ export function useController() {
       return next;
     });
   }, []);
+
+  const updateServerHistory = useCallback((updater: (list: ServerHistoryEntry[]) => ServerHistoryEntry[]) => {
+    setServerHistory((current) => {
+      const next = updater(current).slice(0, SERVER_HISTORY_LIMIT);
+      saveServerHistory(next);
+      return next;
+    });
+  }, []);
+
+  /** 记录 / 置顶一个服务器地址 + 端口，保留已有备注 */
+  const rememberServer = useCallback(
+    (server: string, port: string, touch = true) => {
+      const s = server.trim().replace(/\/+$/, '');
+      const p = port.trim();
+      if (!s) return;
+      const key = serverHistoryKey(s, p);
+      updateServerHistory((list) => {
+        const existing = list.find((entry) => serverHistoryKey(entry.server, entry.port) === key);
+        const entry: ServerHistoryEntry = {
+          server: s,
+          port: p,
+          name: existing?.name ?? '',
+          lastUsedAt: touch ? new Date().toISOString() : existing?.lastUsedAt ?? '',
+        };
+        return [entry, ...list.filter((item) => serverHistoryKey(item.server, item.port) !== key)];
+      });
+    },
+    [updateServerHistory],
+  );
 
   /** 记录 / 置顶一个设备号，保留已知的设备名称 */
   const rememberDevice = useCallback(
@@ -972,6 +1044,7 @@ export function useController() {
       setActiveUrl(url);
       setActiveConfig({ ...configRef.current });
       activeDeviceCodeRef.current = configRef.current.deviceCode.trim();
+      activeServerRef.current = { server: configRef.current.server, port: configRef.current.port };
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(configRef.current));
       } catch {
@@ -1005,6 +1078,7 @@ export function useController() {
         setError(null);
         appendLog('system', 'connected', `已连接 ${url}`);
         rememberDevice(activeDeviceCodeRef.current);
+        rememberServer(activeServerRef.current.server, activeServerRef.current.port);
         requestState();
         fetchPoints();
         fetchTaskModes();
@@ -1191,7 +1265,7 @@ export function useController() {
         }
       };
     },
-    [appendLog, applyBoundVoice, applyDeviceVoice, applyRuntimeDevice, applyRuntimePoints, clearRealtime, clearQueryTimer, clearVoiceBindTimer, fetchAsrStatus, fetchDeviceVoice, fetchPoints, fetchTaskModes, fetchVoices, endAsrSession, handleAsrMessage, rememberDevice, requestState],
+    [appendLog, applyBoundVoice, applyDeviceVoice, applyRuntimeDevice, applyRuntimePoints, clearRealtime, clearQueryTimer, clearVoiceBindTimer, fetchAsrStatus, fetchDeviceVoice, fetchPoints, fetchTaskModes, fetchVoices, endAsrSession, handleAsrMessage, rememberDevice, rememberServer, requestState],
   );
   connectRef.current = connect;
 
@@ -1262,6 +1336,7 @@ export function useController() {
     previewText,
     runtimeDevice,
     deviceHistory,
+    serverHistory,
     asrStatus,
     asrError,
     asrLoading,
@@ -1281,6 +1356,16 @@ export function useController() {
     cancelAsr,
     removeDeviceHistory: (code: string) => updateDeviceHistory((list) => list.filter((entry) => entry.code !== code)),
     clearDeviceHistory: () => updateDeviceHistory(() => []),
+    saveServerToHistory: (server: string, port: string) => rememberServer(server, port, false),
+    renameServerHistory: (server: string, port: string, name: string) =>
+      updateServerHistory((list) =>
+        list.map((entry) =>
+          serverHistoryKey(entry.server, entry.port) === serverHistoryKey(server, port) ? { ...entry, name: name.trim() } : entry,
+        ),
+      ),
+    removeServerHistory: (server: string, port: string) =>
+      updateServerHistory((list) => list.filter((entry) => serverHistoryKey(entry.server, entry.port) !== serverHistoryKey(server, port))),
+    clearServerHistory: () => updateServerHistory(() => []),
     connect,
     disconnect,
     requestState,
