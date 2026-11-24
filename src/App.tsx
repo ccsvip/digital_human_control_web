@@ -51,7 +51,6 @@ import {
   CopyOutlined,
   DeleteOutlined,
   DisconnectOutlined,
-  EditOutlined,
   EnvironmentOutlined,
   EyeInvisibleOutlined,
   EyeOutlined,
@@ -60,6 +59,8 @@ import {
   LinkOutlined,
   LoadingOutlined,
   MessageOutlined,
+  SettingOutlined,
+  MutedOutlined,
   NodeIndexOutlined,
   PauseCircleOutlined,
   PlayCircleOutlined,
@@ -1014,7 +1015,7 @@ function App() {
         )}
       </Modal>
       <Modal
-        title={<Space><SoundOutlined />上下线语音提醒</Space>}
+        title={<Space><SoundOutlined />上下线提醒设置</Space>}
         open={presenceOpen}
         onCancel={() => {
           controller.stopPresenceAlert();
@@ -1036,6 +1037,21 @@ function App() {
         }
       >
         <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
+          <div className="presence-setting-switch">
+            <div>
+              <Text strong>语音播报</Text>
+              <br />
+              <Text type="secondary" style={{ fontSize: 12 }}>关闭后仍会在右下角弹出通知</Text>
+            </div>
+            <Switch
+              checked={presenceAlert.enabled}
+              onChange={(checked) => {
+                controller.setPresenceAlert({ enabled: checked });
+                if (!checked) controller.stopPresenceAlert();
+              }}
+              aria-label="语音播报开关"
+            />
+          </div>
           <Text type="secondary" style={{ fontSize: 12 }}>
             设备上线 / 离线时，用当前服务器的文本转语音接口合成下面的文字，在本控制台播放。
             <Text code>{'{name}'}</Text> 会替换为设备名称。
@@ -1233,28 +1249,37 @@ function App() {
                 </Space>
               </div>
 
-              {/* 上下线语音提醒 */}
-              <div className="presence-alert-row">
-                <Space size={8}>
-                  <SoundOutlined />
-                  <Text>上下线语音提醒</Text>
-                  {status === 'connected' && (
-                    <Tag color={deviceStatusColor} style={{ margin: 0 }}>
-                      {deviceStatus}
-                    </Tag>
-                  )}
-                </Space>
-                <Space size={4}>
-                  <Tooltip title="设置播报文本">
-                    <Button type="text" size="small" icon={<EditOutlined />} aria-label="设置上下线播报文本" onClick={openPresenceSettings} />
+              {/* 上下线提醒 */}
+              <div className={`presence-card${presenceAlert.enabled ? '' : ' presence-card--muted'}`}>
+                <div className="presence-card__icon" aria-hidden="true">
+                  {presenceAlert.enabled ? <SoundOutlined /> : <MutedOutlined />}
+                </div>
+                <div className="presence-card__body">
+                  <Text strong className="presence-card__title">上下线提醒</Text>
+                  <Text type="secondary" className="presence-card__desc">
+                    {presenceAlert.enabled ? '语音播报 + 右下角通知' : '已静音，仅右下角通知'}
+                  </Text>
+                </div>
+                <div className="presence-card__actions">
+                  <Tooltip title={presenceAlert.enabled ? '关闭语音播报' : '开启语音播报'}>
+                    <Button
+                      type="text"
+                      size="small"
+                      className={`presence-card__toggle${presenceAlert.enabled ? ' is-on' : ''}`}
+                      icon={presenceAlert.enabled ? <SoundOutlined /> : <MutedOutlined />}
+                      aria-label={presenceAlert.enabled ? '关闭语音播报' : '开启语音播报'}
+                      aria-pressed={presenceAlert.enabled}
+                      onClick={() => {
+                        const next = !presenceAlert.enabled;
+                        controller.setPresenceAlert({ enabled: next });
+                        if (!next) controller.stopPresenceAlert();
+                      }}
+                    />
                   </Tooltip>
-                  <Switch
-                    size="small"
-                    checked={presenceAlert.enabled}
-                    onChange={(checked) => controller.setPresenceAlert({ enabled: checked })}
-                    aria-label="上下线语音提醒开关"
-                  />
-                </Space>
+                  <Tooltip title="提醒设置">
+                    <Button type="text" size="small" icon={<SettingOutlined />} aria-label="上下线提醒设置" onClick={openPresenceSettings} />
+                  </Tooltip>
+                </div>
               </div>
 
               {/* 状态摘要 */}
