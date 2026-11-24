@@ -138,9 +138,7 @@ function saveServerHistory(list: ServerHistoryEntry[]) {
 const PRESENCE_ALERT_KEY = 'digital-human-controller.presence-alert.v1';
 const PRESENCE_TTS_CACHE_LIMIT = 20;
 /** 连接期间轮询运行时配置（device.status 由云端根据心跳判定）的间隔 */
-const PRESENCE_POLL_INTERVAL = 10_000;
-/** 在线状态需保持该时长才播报，避免多个来源短暂不一致导致来回播报 */
-const PRESENCE_DEBOUNCE = 2_000;
+const PRESENCE_POLL_INTERVAL = 2_000;
 
 /** 设备上线 / 离线语音提醒配置（文本模板中的 {name} 替换为设备名称） */
 export interface PresenceAlertConfig {
@@ -374,6 +372,7 @@ export function useController() {
   const lastPresenceRef = useRef<boolean | null>(null);
   const presenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const presencePollErrorRef = useRef('');
+  const presencePollingRef = useRef(false);
   const presenceAlertRef = useRef(presenceAlert);
   presenceAlertRef.current = presenceAlert;
   /** 最近一次已知的设备名称（离线时快照被清空，仍可用于播报） */
@@ -1499,7 +1498,8 @@ export function useController() {
   const pollPresence = useCallback(async () => {
     const code = activeDeviceCodeRef.current;
     const target = activeServerRef.current;
-    if (!code || !target.server) return;
+    if (!code || !target.server || presencePollingRef.current) return;
+    presencePollingRef.current = true;
     try {
       const resp = await fetch(buildDeviceRuntimeConfigUrl(target), { headers: { 'X-Device-Code': code } });
       const data = await readJson(resp);
@@ -1513,6 +1513,8 @@ export function useController() {
         presencePollErrorRef.current = msg;
         appendLog('system', 'presence_poll_error', `读取设备在线状态失败：${msg}`);
       }
+    } finally {
+      presencePollingRef.current = false;
     }
   }, [appendLog, applyRuntimeDevice]);
 
@@ -1540,22 +1542,17 @@ export function useController() {
       return undefined;
     }
     if (lastPresenceRef.current === deviceOnline) return undefined;
-    presenceTimerRef.current = setTimeout(() => {
-      presenceTimerRef.current = null;
-      lastPresenceRef.current = deviceOnline;
-      const kind: PresenceKind = deviceOnline ? 'online' : 'offline';
-      const text = presenceText(kind);
-      appendLog('system', kind === 'online' ? 'device_online' : 'device_offline', `设备${kind === 'online' ? '上线' : '离线'}：${text}`);
-      if (!presenceAlertRef.current.enabled || !text) return;
-      speakAlertText(text).catch((reason: unknown) => {
-        const msg = reason instanceof Error ? reason.message : '未知错误';
-        appendLog('system', 'presence_alert_error', `上下线语音提醒失败：${msg}`);
-      });
-    }, PRESENCE_DEBOUNCE);
-    return () => {
-      if (presenceTimerRef.current) clearTimeout(presenceTimerRef.current);
-      presenceTimerRef.current = null;
-    };
+    // 状态变化立即播报
+    lastPresenceRef.current = deviceOnline;
+    const kind: PresenceKind = deviceOnline ? 'online' : 'offline';
+    const text = presenceText(kind);
+    appendLog('system', kind === 'online' ? 'device_online' : 'device_offline', `设备${kind === 'online' ? '上线' : '离线'}：${text}`);
+    if (!presenceAlertRef.current.enabled || !text) return undefined;
+    speakAlertText(text).catch((reason: unknown) => {
+      const msg = reason instanceof Error ? reason.message : '未知错误';
+      appendLog('system', 'presence_alert_error', `上下线语音提醒失败：${msg}`);
+    });
+    return undefined;
   }, [appendLog, deviceOnline, presenceText, speakAlertText, status]);
 
   const canControl = status === 'connected' && screenOnline === true && snapshot !== null;
