@@ -22,6 +22,7 @@ import {
   isVoiceBoundMessage,
   parseAsrDeviceStatus,
   parseAsrTranscript,
+  parseDevicePresence,
   parseFlowSnapshot,
   parsePointGroup,
   parseTaskModes,
@@ -30,6 +31,7 @@ import {
   readAsrError,
   readCloudError,
   runtimeConfigAction,
+  runtimeStatusOnline,
 } from './protocol';
 import { describeMicError, startPcmCapture } from './audioCapture';
 import type { PcmCapture } from './audioCapture';
@@ -131,6 +133,79 @@ function saveServerHistory(list: ServerHistoryEntry[]) {
   } catch {
     // 浏览器不允许存储时忽略，仅影响历史记录
   }
+}
+
+const PRESENCE_ALERT_KEY = 'digital-human-controller.presence-alert.v1';
+const PRESENCE_TTS_CACHE_LIMIT = 20;
+/** 连接期间轮询运行时配置（device.status 由云端根据心跳判定）的间隔 */
+const PRESENCE_POLL_INTERVAL = 10_000;
+/** 在线状态需保持该时长才播报，避免多个来源短暂不一致导致来回播报 */
+const PRESENCE_DEBOUNCE = 2_000;
+
+/** 设备上线 / 离线语音提醒配置（文本模板中的 {name} 替换为设备名称） */
+export interface PresenceAlertConfig {
+  enabled: boolean;
+  onlineText: string;
+  offlineText: string;
+}
+
+export type PresenceKind = 'online' | 'offline';
+
+export const DEFAULT_PRESENCE_ALERT: PresenceAlertConfig = {
+  enabled: true,
+  onlineText: '{name}已上线',
+  offlineText: '{name}已离线，请及时检查',
+};
+
+export function renderPresenceText(template: string, name: string): string {
+  return template.replace(/\{name\}/g, name.trim() || '设备').trim();
+}
+
+function loadPresenceAlert(): PresenceAlertConfig {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PRESENCE_ALERT_KEY) ?? 'null') as Partial<PresenceAlertConfig> | null;
+    if (!saved || typeof saved !== 'object') return DEFAULT_PRESENCE_ALERT;
+    return {
+      enabled: typeof saved.enabled === 'boolean' ? saved.enabled : DEFAULT_PRESENCE_ALERT.enabled,
+      onlineText: typeof saved.onlineText === 'string' ? saved.onlineText : DEFAULT_PRESENCE_ALERT.onlineText,
+      offlineText: typeof saved.offlineText === 'string' ? saved.offlineText : DEFAULT_PRESENCE_ALERT.offlineText,
+    };
+  } catch {
+    return DEFAULT_PRESENCE_ALERT;
+  }
+}
+
+function savePresenceAlert(value: PresenceAlertConfig) {
+  try {
+    localStorage.setItem(PRESENCE_ALERT_KEY, JSON.stringify(value));
+  } catch {
+    // 浏览器不允许存储时忽略
+  }
+}
+
+/**
+ * 音色试听与上下线提醒共用：POST /api/v1/ai-models/tts/runtime/ 合成音频（wav），
+ * 返回音频 Blob，由控制端浏览器本地播放（控制端喇叭），设备不参与播报。
+ */
+async function requestTtsAudio(
+  target: { server: string; port: string; deviceCode: string },
+  text: string,
+  voiceId?: number | null,
+): Promise<Blob> {
+  const deviceCode = target.deviceCode.trim();
+  if (!deviceCode) throw new Error('设备号不能为空');
+  const body: Record<string, unknown> = { text, wrapWav: true };
+  if (voiceId !== null && voiceId !== undefined) body.voiceId = voiceId;
+  const resp = await fetch(buildTtsRuntimeUrl(target), {
+    method: 'POST',
+    headers: { 'X-Device-Code': deviceCode, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    const data = await readJson(resp);
+    throw new Error(readCloudError(data) || `HTTP ${resp.status}`);
+  }
+  return resp.blob();
 }
 
 function sameVoiceId(a: unknown, b: unknown): boolean {
@@ -256,6 +331,10 @@ export function useController() {
   const [runtimeDevice, setRuntimeDevice] = useState<RuntimeDeviceInfo | null>(null);
   const [deviceHistory, setDeviceHistory] = useState<DeviceHistoryEntry[]>(loadDeviceHistory);
   const [serverHistory, setServerHistory] = useState<ServerHistoryEntry[]>(loadServerHistory);
+  const [presenceAlert, setPresenceAlertState] = useState<PresenceAlertConfig>(loadPresenceAlert);
+  const [presenceSpeaking, setPresenceSpeaking] = useState(false);
+  /** 设备在线状态（心跳）：来自 device.status 轮询 / 推送、devices.events、screen_online/offline、状态快照 */
+  const [deviceOnline, setDeviceOnline] = useState<boolean | null>(null);
   const [asrStatus, setAsrStatus] = useState<AsrDeviceStatus | null>(null);
   const [asrError, setAsrError] = useState<string | null>(null);
   const [asrLoading, setAsrLoading] = useState(false);
@@ -291,6 +370,18 @@ export function useController() {
   const activeDeviceCodeRef = useRef('');
   /** 当前连接使用的服务器地址与端口（连接成功后写入服务器历史） */
   const activeServerRef = useRef({ server: '', port: '' });
+  /** 上线 / 离线提醒：上一次已知在线状态（null 表示本次连接尚未确定） */
+  const lastPresenceRef = useRef<boolean | null>(null);
+  const presenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const presencePollErrorRef = useRef('');
+  const presenceAlertRef = useRef(presenceAlert);
+  presenceAlertRef.current = presenceAlert;
+  /** 最近一次已知的设备名称（离线时快照被清空，仍可用于播报） */
+  const lastDeviceNameRef = useRef('');
+  const alertAudioRef = useRef<HTMLAudioElement | null>(null);
+  const alertTtsCacheRef = useRef(new Map<string, Blob>());
+  const currentVoiceRef = useRef<VoiceTone | null>(null);
+  currentVoiceRef.current = currentVoice;
 
   configRef.current = config;
   snapshotRef.current = snapshot;
@@ -370,6 +461,8 @@ export function useController() {
       const info = extractRuntimeDevice(source);
       if (!info) return;
       setRuntimeDevice(info);
+      const online = runtimeStatusOnline(info.status);
+      if (online !== null) setDeviceOnline(online);
       const trimmed = code.trim();
       if (info.name && trimmed) {
         updateDeviceHistory((list) =>
@@ -673,6 +766,7 @@ export function useController() {
     setIsQuerying(false);
     setSnapshot(null);
     setScreenOnline(null);
+    setDeviceOnline(null);
     setLastReceivedAt(null);
     setPointGroup(null);
     setTaskModes(null);
@@ -848,17 +942,7 @@ export function useController() {
       setVoicePreviewing(true);
       setPreviewText(sampleText);
       try {
-        const url = buildTtsRuntimeUrl(currentConfig);
-        const resp = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'X-Device-Code': currentConfig.deviceCode,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ text: sampleText, voiceId: voice.id, wrapWav: true }),
-        });
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const blob = await resp.blob();
+        const blob = await requestTtsAudio(currentConfig, sampleText, voice.id);
         const audioUrl = URL.createObjectURL(blob);
         const audio = new Audio(audioUrl);
         audio.onended = () => {
@@ -1093,6 +1177,18 @@ export function useController() {
         } catch (reason) {
           appendLog('system', 'runtime_config_subscribe_error', reason instanceof Error ? reason.message : '订阅运行时配置失败');
         }
+        // 订阅设备事件：用于接收设备上线 / 离线推送
+        const eventsCode = activeDeviceCodeRef.current;
+        if (eventsCode) {
+          const sub = {
+            type: 'devices.events.subscribe',
+            id: `web-devices-events-${Date.now()}`,
+            payload: { deviceCode: eventsCode, deviceCodes: [eventsCode] },
+          };
+          const raw = JSON.stringify(sub);
+          socket.send(raw);
+          appendLog('outgoing', sub.type, raw);
+        }
       };
 
       socket.onmessage = (event) => {
@@ -1119,6 +1215,9 @@ export function useController() {
           return;
         }
 
+        const presence = parseDevicePresence(message, activeDeviceCodeRef.current);
+        if (presence !== null) setDeviceOnline(presence);
+
         if (type === 'device.task_flow.state') {
           try {
             const nextSnapshot = parseFlowSnapshot(message);
@@ -1126,6 +1225,7 @@ export function useController() {
             setIsQuerying(false);
             setSnapshot(nextSnapshot);
             setScreenOnline(true);
+            setDeviceOnline(true);
             setLastReceivedAt(new Date().toISOString());
             setError(null);
           } catch (reason) {
@@ -1238,9 +1338,11 @@ export function useController() {
           setIsQuerying(false);
           setSnapshot(null);
           setScreenOnline(false);
+          setDeviceOnline(false);
           setLastReceivedAt(null);
           setError('设备已离线，控制动作已禁用');
         } else if (type === 'screen_online') {
+          setDeviceOnline(true);
           setScreenOnline((current) => (snapshotRef.current ? true : current));
           requestState();
         }
@@ -1308,6 +1410,154 @@ export function useController() {
     [],
   );
 
+  const setPresenceAlert = useCallback((patch: Partial<PresenceAlertConfig>) => {
+    setPresenceAlertState((current) => {
+      const next = { ...current, ...patch };
+      savePresenceAlert(next);
+      return next;
+    });
+  }, []);
+
+  /**
+   * 与音色试听同一套逻辑：调用设备所在服务器的 TTS 接口合成文本，通过控制端（浏览器）喇叭播放，设备不播报。
+   * 优先使用当前连接的服务器与设备号；未连接时使用输入框中的配置（用于试听）。
+   */
+  const speakAlertText = useCallback(
+    async (text: string) => {
+      const content = text.trim();
+      if (!content) throw new Error('播报文本为空');
+      const connected = wsRef.current?.readyState === WebSocket.OPEN && activeServerRef.current.server;
+      const target = connected
+        ? { ...activeServerRef.current, deviceCode: activeDeviceCodeRef.current }
+        : { server: configRef.current.server, port: configRef.current.port, deviceCode: configRef.current.deviceCode.trim() };
+      if (!target.deviceCode) throw new Error('设备号不能为空');
+      // 与音色试听一致：使用控制台当前选中的音色，未知时回退设备当前音色
+      const voiceId = currentVoiceRef.current?.id ?? deviceVoiceRef.current?.id ?? null;
+      const cacheKey = `${serverHistoryKey(target.server, target.port)}|${target.deviceCode}|${voiceId ?? 'default'}|${content}`;
+      const cache = alertTtsCacheRef.current;
+      let blob = cache.get(cacheKey);
+      if (!blob) {
+        blob = await requestTtsAudio(target, content, voiceId);
+        cache.set(cacheKey, blob);
+        if (cache.size > PRESENCE_TTS_CACHE_LIMIT) {
+          const oldest = cache.keys().next().value;
+          if (oldest !== undefined) cache.delete(oldest);
+        }
+      }
+      alertAudioRef.current?.pause();
+      const audioUrl = URL.createObjectURL(blob);
+      const audio = new Audio(audioUrl);
+      alertAudioRef.current = audio;
+      setPresenceSpeaking(true);
+      const finish = () => {
+        URL.revokeObjectURL(audioUrl);
+        if (alertAudioRef.current === audio) {
+          alertAudioRef.current = null;
+          setPresenceSpeaking(false);
+        }
+      };
+      audio.onended = finish;
+      audio.onerror = finish;
+      audio.onpause = finish;
+      try {
+        await audio.play();
+      } catch (reason) {
+        finish();
+        if (reason instanceof DOMException && reason.name === 'NotAllowedError') {
+          throw new Error('浏览器阻止了自动播放，请先在页面上点击任意位置');
+        }
+        throw reason;
+      }
+    },
+    [],
+  );
+
+  const presenceText = useCallback(
+    (kind: PresenceKind, template?: string) => {
+      const cfg = presenceAlertRef.current;
+      const tpl = template ?? (kind === 'online' ? cfg.onlineText : cfg.offlineText);
+      return renderPresenceText(tpl, lastDeviceNameRef.current);
+    },
+    [],
+  );
+
+  /** 试听上线 / 离线提醒（可传入尚未保存的模板） */
+  const testPresenceAlert = useCallback(
+    (kind: PresenceKind, template?: string) => speakAlertText(presenceText(kind, template)),
+    [presenceText, speakAlertText],
+  );
+
+  const stopPresenceAlert = useCallback(() => {
+    alertAudioRef.current?.pause();
+  }, []);
+
+  // 记住最近的设备名称，离线后快照被清空时仍能播报名称
+  const knownDeviceName = runtimeDevice?.name || snapshot?.deviceInfo.deviceName || '';
+  if (knownDeviceName) lastDeviceNameRef.current = knownDeviceName;
+
+  /** 轮询运行时配置中的 device.status（云端按心跳判定在线 / 离线） */
+  const pollPresence = useCallback(async () => {
+    const code = activeDeviceCodeRef.current;
+    const target = activeServerRef.current;
+    if (!code || !target.server) return;
+    try {
+      const resp = await fetch(buildDeviceRuntimeConfigUrl(target), { headers: { 'X-Device-Code': code } });
+      const data = await readJson(resp);
+      if (!resp.ok) throw new Error(readCloudError(data) || `HTTP ${resp.status}`);
+      if (activeDeviceCodeRef.current !== code) return;
+      applyRuntimeDevice(data, code);
+      presencePollErrorRef.current = '';
+    } catch (reason) {
+      const msg = reason instanceof Error ? reason.message : '未知错误';
+      if (presencePollErrorRef.current !== msg) {
+        presencePollErrorRef.current = msg;
+        appendLog('system', 'presence_poll_error', `读取设备在线状态失败：${msg}`);
+      }
+    }
+  }, [appendLog, applyRuntimeDevice]);
+
+  useEffect(() => {
+    if (status !== 'connected') return undefined;
+    const timer = setInterval(() => void pollPresence(), PRESENCE_POLL_INTERVAL);
+    return () => clearInterval(timer);
+  }, [pollPresence, status]);
+
+  // 设备在线状态变化时播报提醒（首个状态只作为基准）
+  useEffect(() => {
+    if (presenceTimerRef.current) {
+      clearTimeout(presenceTimerRef.current);
+      presenceTimerRef.current = null;
+    }
+    if (status !== 'connected') {
+      lastPresenceRef.current = null;
+      if (status === 'disconnected') lastDeviceNameRef.current = '';
+      return undefined;
+    }
+    if (deviceOnline === null) return undefined;
+    if (lastPresenceRef.current === null) {
+      lastPresenceRef.current = deviceOnline;
+      appendLog('system', 'device_presence', `设备当前${deviceOnline ? '在线' : '离线'}（基准状态，不播报）`);
+      return undefined;
+    }
+    if (lastPresenceRef.current === deviceOnline) return undefined;
+    presenceTimerRef.current = setTimeout(() => {
+      presenceTimerRef.current = null;
+      lastPresenceRef.current = deviceOnline;
+      const kind: PresenceKind = deviceOnline ? 'online' : 'offline';
+      const text = presenceText(kind);
+      appendLog('system', kind === 'online' ? 'device_online' : 'device_offline', `设备${kind === 'online' ? '上线' : '离线'}：${text}`);
+      if (!presenceAlertRef.current.enabled || !text) return;
+      speakAlertText(text).catch((reason: unknown) => {
+        const msg = reason instanceof Error ? reason.message : '未知错误';
+        appendLog('system', 'presence_alert_error', `上下线语音提醒失败：${msg}`);
+      });
+    }, PRESENCE_DEBOUNCE);
+    return () => {
+      if (presenceTimerRef.current) clearTimeout(presenceTimerRef.current);
+      presenceTimerRef.current = null;
+    };
+  }, [appendLog, deviceOnline, presenceText, speakAlertText, status]);
+
   const canControl = status === 'connected' && screenOnline === true && snapshot !== null;
   const configDirty = activeConfig !== null && JSON.stringify(activeConfig) !== JSON.stringify(config);
 
@@ -1337,6 +1587,12 @@ export function useController() {
     runtimeDevice,
     deviceHistory,
     serverHistory,
+    presenceAlert,
+    presenceSpeaking,
+    deviceOnline,
+    setPresenceAlert,
+    testPresenceAlert,
+    stopPresenceAlert,
     asrStatus,
     asrError,
     asrLoading,

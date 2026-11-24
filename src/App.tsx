@@ -22,6 +22,7 @@ import {
   Space,
   Statistic,
   Steps,
+  Switch,
   Tag,
   Timeline,
   Tooltip,
@@ -49,6 +50,7 @@ import {
   CopyOutlined,
   DeleteOutlined,
   DisconnectOutlined,
+  EditOutlined,
   EnvironmentOutlined,
   EyeInvisibleOutlined,
   EyeOutlined,
@@ -82,7 +84,8 @@ import {
   taskDisplayName,
   taskTypeLabel,
 } from './protocol';
-import { serverHistoryKey, useController } from './useController';
+import { DEFAULT_PRESENCE_ALERT, renderPresenceText, serverHistoryKey, useController } from './useController';
+import type { PresenceKind } from './useController';
 import type { AsrTarget, LogDirection } from './useController';
 import { useTextHistory } from './textHistory';
 import type { TextHistoryKind } from './textHistory';
@@ -241,6 +244,9 @@ function App() {
     runtimeDevice,
     deviceHistory,
     serverHistory,
+    presenceAlert,
+    presenceSpeaking,
+    deviceOnline,
     asrStatus,
     asrError,
     asrLoading,
@@ -259,6 +265,8 @@ function App() {
   const [showDeviceCode, setShowDeviceCode] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [serverHistoryOpen, setServerHistoryOpen] = useState(false);
+  const [presenceOpen, setPresenceOpen] = useState(false);
+  const [presenceDraft, setPresenceDraft] = useState({ onlineText: '', offlineText: '' });
   const [resourceKind, setResourceKind] = useState<DeviceResourceKind>('images');
   const [chatInput, setChatInput] = useState('');
   const [broadcastText, setBroadcastText] = useState('');
@@ -500,6 +508,29 @@ function App() {
     notify('已保存当前服务器地址');
   };
 
+  const openPresenceSettings = () => {
+    setPresenceDraft({ onlineText: presenceAlert.onlineText, offlineText: presenceAlert.offlineText });
+    setPresenceOpen(true);
+  };
+
+  const testPresence = async (kind: PresenceKind) => {
+    const template = kind === 'online' ? presenceDraft.onlineText : presenceDraft.offlineText;
+    try {
+      await controller.testPresenceAlert(kind, template);
+    } catch (reason) {
+      notify(`试听失败：${reason instanceof Error ? reason.message : '未知错误'}`, 'error');
+    }
+  };
+
+  const savePresenceSettings = () => {
+    controller.setPresenceAlert({
+      onlineText: presenceDraft.onlineText.trim() || DEFAULT_PRESENCE_ALERT.onlineText,
+      offlineText: presenceDraft.offlineText.trim() || DEFAULT_PRESENCE_ALERT.offlineText,
+    });
+    setPresenceOpen(false);
+    notify('上下线提醒已保存');
+  };
+
   const suggestedQuestions = runtimeDevice?.suggestedQuestions ?? [];
 
   const askSuggested = (text: string) => {
@@ -657,7 +688,19 @@ function App() {
     }
   };
 
-  const deviceStatus = screenOnline === true ? '在线' : screenOnline === false ? '离线' : '未知';
+  /** 设备在线：优先心跳判定（deviceOnline），其次 screen_online / 状态快照 */
+  const onlineState = deviceOnline ?? screenOnline;
+  const deviceStatus = status !== 'connected' ? '—' : onlineState === true ? '在线' : onlineState === false ? '离线' : '未知';
+  const deviceStatusColor = onlineState === true ? 'success' : onlineState === false ? 'error' : 'default';
+  /** 连接状态标签：服务已连接时进一步区分设备在线 / 离线，避免设备离线仍显示“已连接” */
+  const linkState: { key: string; label: string; color: string } =
+    status !== 'connected'
+      ? { key: status, label: CONNECTION_LABELS[status], color: CONNECTION_COLORS[status] }
+      : onlineState === true
+        ? { key: 'online', label: '设备在线', color: 'success' }
+        : onlineState === false
+          ? { key: 'offline', label: '设备离线', color: 'error' }
+          : { key: 'unknown', label: '服务已连接 · 设备未知', color: 'warning' };
   const flowName = snapshot ? (snapshot.command?.name ?? '无任务流程') : '等待设备状态';
   const battery = snapshot?.deviceInfo.robotBatteryPercent;
   const taskModeTotal = taskModes ? taskModes.guide.length + taskModes.explain.length + taskModes.unassigned.length : 0;
@@ -943,6 +986,66 @@ function App() {
           />
         )}
       </Modal>
+      <Modal
+        title={<Space><SoundOutlined />上下线语音提醒</Space>}
+        open={presenceOpen}
+        onCancel={() => {
+          controller.stopPresenceAlert();
+          setPresenceOpen(false);
+        }}
+        width={520}
+        footer={
+          <Space>
+            <Button
+              onClick={() =>
+                setPresenceDraft({ onlineText: DEFAULT_PRESENCE_ALERT.onlineText, offlineText: DEFAULT_PRESENCE_ALERT.offlineText })
+              }
+            >
+              恢复默认
+            </Button>
+            <Button onClick={() => setPresenceOpen(false)}>取消</Button>
+            <Button type="primary" onClick={savePresenceSettings}>保存</Button>
+          </Space>
+        }
+      >
+        <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            设备上线 / 离线时，用当前服务器的文本转语音接口合成下面的文字，在本控制台播放。
+            <Text code>{'{name}'}</Text> 会替换为设备名称。
+          </Text>
+          {(['online', 'offline'] as PresenceKind[]).map((kind) => {
+            const key = kind === 'online' ? 'onlineText' : 'offlineText';
+            const value = presenceDraft[key];
+            return (
+              <div key={kind}>
+                <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <Text strong>{kind === 'online' ? '上线播报' : '离线播报'}</Text>
+                  <Button
+                    size="small"
+                    icon={<PlayCircleOutlined />}
+                    loading={presenceSpeaking}
+                    disabled={!value.trim()}
+                    onClick={() => void testPresence(kind)}
+                  >
+                    试听
+                  </Button>
+                </Space>
+                <Input.TextArea
+                  value={value}
+                  onChange={(e) => setPresenceDraft((current) => ({ ...current, [key]: e.target.value }))}
+                  placeholder={DEFAULT_PRESENCE_ALERT[key]}
+                  autoSize={{ minRows: 1, maxRows: 3 }}
+                  maxLength={200}
+                  showCount
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  预览：{renderPresenceText(value || DEFAULT_PRESENCE_ALERT[key], deviceName)}
+                </Text>
+              </div>
+            );
+          })}
+        </Space>
+      </Modal>
       <Layout className="console-shell">
         {/* 左侧连接配置面板 */}
         <Sider width={300} theme="light" className="console-sidebar">
@@ -967,8 +1070,8 @@ function App() {
                       <ApiOutlined />
                       <Text strong>连接配置</Text>
                     </Space>
-                    <Tag color={CONNECTION_COLORS[status]} style={{ margin: 0 }}>
-                      {CONNECTION_LABELS[status]}
+                    <Tag color={linkState.color} style={{ margin: 0 }}>
+                      {linkState.label}
                     </Tag>
                   </Space>
                 </div>
@@ -1103,6 +1206,30 @@ function App() {
                 </Space>
               </div>
 
+              {/* 上下线语音提醒 */}
+              <div className="presence-alert-row">
+                <Space size={8}>
+                  <SoundOutlined />
+                  <Text>上下线语音提醒</Text>
+                  {status === 'connected' && (
+                    <Tag color={deviceStatusColor} style={{ margin: 0 }}>
+                      {deviceStatus}
+                    </Tag>
+                  )}
+                </Space>
+                <Space size={4}>
+                  <Tooltip title="设置播报文本">
+                    <Button type="text" size="small" icon={<EditOutlined />} aria-label="设置上下线播报文本" onClick={openPresenceSettings} />
+                  </Tooltip>
+                  <Switch
+                    size="small"
+                    checked={presenceAlert.enabled}
+                    onChange={(checked) => controller.setPresenceAlert({ enabled: checked })}
+                    aria-label="上下线语音提醒开关"
+                  />
+                </Space>
+              </div>
+
               {/* 状态摘要 */}
               <div className="connection-summary">
                 <Descriptions
@@ -1124,7 +1251,8 @@ function App() {
                     {
                       key: 'device',
                       label: '设备状态',
-                      children: <Text strong>{deviceStatus}</Text>,
+                      children:
+                        status === 'connected' ? <Tag color={deviceStatusColor}>{deviceStatus}</Tag> : <Text strong>{deviceStatus}</Text>,
                     },
                     {
                       key: 'snapshot',
@@ -1155,9 +1283,9 @@ function App() {
             </div>
             <div className="console-header__actions">
               <span className="protocol-label"><CodeOutlined /> 协议 v1.23</span>
-              <span className={`connection-pill connection-pill--${status}`}>
+              <span className={`connection-pill connection-pill--${status} connection-pill--device-${linkState.key}`}>
                 {status === 'connecting' || status === 'reconnecting' ? <LoadingOutlined /> : <span className="status-dot" />}
-                {CONNECTION_LABELS[status]}
+                {linkState.label}
               </span>
               <Badge count={unreadLogs} overflowCount={49} size="small" offset={[-4, 4]}>
                 <Button icon={<CodeOutlined />} onClick={openLogDrawer}>

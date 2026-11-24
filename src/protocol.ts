@@ -828,6 +828,8 @@ export interface RuntimeDeviceInfo {
   systemVersion: string;
   lastHeartbeat: string;
   lastAuthAt: string;
+  /** 云端根据心跳判定的设备在线状态（device.status），例如 online / offline */
+  status: string;
   /** 智能体名称与模型 */
   agentName: string;
   llmModelName: string;
@@ -903,6 +905,7 @@ export function extractRuntimeDevice(source: unknown): RuntimeDeviceInfo | null 
     systemVersion: str(device.systemVersion),
     lastHeartbeat: str(device.lastHeartbeat),
     lastAuthAt: str(device.lastAuthAt),
+    status: str(device.status).toLowerCase(),
     agentName: str(agent.name) || str(device.agentApplicationName),
     llmModelName: str(agent.llmModelName),
     openingMessage: str(agent.openingMessage),
@@ -912,6 +915,46 @@ export function extractRuntimeDevice(source: unknown): RuntimeDeviceInfo | null 
     logArchiveFileName: str(device.logArchiveFileName),
     logArchiveUploadedAt: str(device.logArchiveUploadedAt),
   };
+}
+
+/** 运行时配置 device.status 转为在线布尔值，无法判断时返回 null */
+export function runtimeStatusOnline(status: string | null | undefined): boolean | null {
+  const value = (status ?? '').trim().toLowerCase();
+  if (value === 'online') return true;
+  if (value === 'offline') return false;
+  return null;
+}
+
+/**
+ * 从 devices.events 等实时推送中解析指定设备的上线 / 离线事件（宽松解析，云端事件结构未写入文档）。
+ * 返回 true=上线，false=离线，null=与该设备的在线状态无关。
+ */
+export function parseDevicePresence(message: unknown, deviceCode: string): boolean | null {
+  if (!isRecord(message)) return null;
+  const type = typeof message.type === 'string' ? message.type.toLowerCase() : '';
+  if (!type.startsWith('device') || type.startsWith('device.runtime_config') || type === 'device.task_flow.state') return null;
+  const payload = isRecord(message.payload) ? message.payload : message;
+  const scopes = [payload, payload.device, payload.data, payload.event].filter(isRecord);
+  const codeOf = (c: Record<string, unknown>) => {
+    const v = c.deviceCode ?? c.device_code ?? c.code;
+    return typeof v === 'string' ? v.trim() : '';
+  };
+  const code = scopes.map(codeOf).find(Boolean) ?? '';
+  if (!code || code !== deviceCode.trim()) return null;
+
+  for (const c of scopes) {
+    for (const key of ['isOnline', 'is_online', 'online']) {
+      if (typeof c[key] === 'boolean') return c[key] as boolean;
+    }
+    for (const key of ['status', 'state', 'event', 'action']) {
+      const v = typeof c[key] === 'string' ? (c[key] as string).toLowerCase() : '';
+      if (/offline|disconnect/.test(v)) return false;
+      if (/online|connected/.test(v)) return true;
+    }
+  }
+  if (/offline|disconnect/.test(type)) return false;
+  if (/online|connected/.test(type)) return true;
+  return null;
 }
 
 // ===================== 语音识别状态（GET /ai-models/asr/device-status/） =====================
